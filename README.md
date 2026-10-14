@@ -1,27 +1,27 @@
 # drift
 
 A Linux port of [Glide](https://github.com/michaelshimeles/glide), the
-macOS screen recorder by Michael Shimeles that makes a recording look
-finished. Record the screen, a window or an area; drift draws the cursor
-again larger and smoother, zooms into what you click, sets the picture
-on a background with a shadow and rounded corners, and exports MP4 or
-GIF. The engine, the renderer and the editor are Glide's as they are;
-what reads the screen, encodes it and talks to the desktop is written
-for Linux and X11.
+open-source macOS screen recorder by Michael Shimeles for making polished
+product videos. Record your screen, a window or an area; drift re-renders
+the cursor, zooms into what you click, adds a background, shadow and
+rounded corners, and exports MP4 or GIF.
+
+The engine, renderer and editor are Glide's, unchanged. Screen capture,
+encoding and desktop integration are rewritten for Linux (X11).
 
 ```sh
-glide                              # the app: record, then edit and export
-glide record -t 10                 # the main display, for ten seconds
+glide                              # open the app
+glide record -t 10                 # record the main display for 10 seconds
 glide record --area 200,150,1280,720 --mic
 glide export Recording.glide --height 1080
 ```
 
-The program and its `.glide` projects keep Glide's name.
+The binary and the `.glide` project format keep Glide's name.
 
 ## Install
 
-It needs X11, a GPU with Vulkan, CMake and ffmpeg's libraries. On Debian
-or Ubuntu:
+Requires X11, a Vulkan-capable GPU, CMake and the ffmpeg libraries. On
+Debian or Ubuntu:
 
 ```sh
 sudo apt install cmake libavcodec-dev libavformat-dev libavutil-dev \
@@ -30,45 +30,50 @@ cargo build --release
 cp target/release/glide ~/.local/bin/
 ```
 
-## Use
+## Usage
 
-Press Record, or Ctrl+Alt+Shift+R from anywhere; the same key stops it,
-and the recording opens in the editor. The shortcuts are set under
-Global shortcuts. Recordings are kept in `~/Videos/Glide`, settings in
-`~/.config/glide`.
+Click Record, or press Ctrl+Alt+Shift+R from anywhere. Press the shortcut
+again to stop, and the recording opens in the editor. Shortcuts can be
+changed under Global shortcuts.
 
-It records with the GPU's encoder (NVENC) when there is one and x264
-when there is not; `GLIDE_ENCODER=software` asks for x264. What the
-computer plays and the microphone are heard through PulseAudio, each on
-a track of its own.
+- Recordings are saved to `~/Videos/Glide`, settings to `~/.config/glide`.
+- Video is encoded with NVENC when available, otherwise x264. Set
+  `GLIDE_ENCODER=software` to force x264.
+- System audio and the microphone are captured through PulseAudio, on
+  separate tracks.
 
 ```sh
-glide devices                      # displays, windows, microphones
+glide devices                      # list displays, windows and microphones
 glide export Project.glide --format gif
-glide transcribe Project.glide     # captions, with Whisper
-glide resize-window 1234 1920x1080 # a window id from `glide devices`
-glide synth demo.glide             # a made-up recording to try the editor on
+glide transcribe Project.glide     # generate captions with Whisper
+glide resize-window 1234 1920x1080 # window id from `glide devices`
+glide synth demo.glide             # create a sample project to try the editor
 ```
 
-`glide --help` lists the rest.
+Run `glide --help` for the full list.
 
-## Not as on macOS
+## Differences from Glide on macOS
 
-X11 cannot leave a window out of what is read from the screen. So the
-recording's controls are put up only where they will not be recorded,
-beside an area or a window or on another display, and a whole display is
-stopped with the key; the preview before recording shows drift's own
-window in it; and a window is recorded as the part of the screen it is
-on, with whatever is over it.
+X11 has no way to exclude a window from screen capture, which leads to a
+few differences:
 
-There is no tray icon yet and no camera, and exporting is slower than
-Glide's. Recording an iPhone, Apple's speech recognition and voice
-isolation are not here and will not be.
+- The recording controls only appear where they won't be captured: next
+  to a recorded area or window, or on another display. When recording a
+  whole display, use the shortcut to stop.
+- The preview on the setup screen includes drift's own window.
+- A window recording captures the region of the screen the window
+  occupies, so anything overlapping it is recorded too.
 
-## Glide
+Not yet implemented: a tray icon, camera capture, and fast export (it is
+currently slower than Glide's).
 
-`docs/PORT.md` says what differs from Glide and what is left to do. This
-repository keeps Glide's history, so its changes can be merged:
+Not supported: iPhone and iPad recording, Apple Speech captions and voice
+isolation, which depend on macOS.
+
+## Staying in sync with Glide
+
+This repository keeps Glide's commit history, so upstream changes can be
+merged:
 
 ```sh
 git remote add upstream https://github.com/michaelshimeles/glide
@@ -76,9 +81,16 @@ git fetch upstream
 git merge upstream/main
 ```
 
-Glide's behaviour was worked out from Screen Studio; neither it nor
-drift is affiliated with Screen Studio or contains its code or assets.
-Captions use [whisper.cpp](https://github.com/ggml-org/whisper.cpp); the
-typeface is Inter, by Rasmus Andersson.
+See `docs/PORT.md` for a detailed list of what differs from Glide and
+what work remains.
 
-MIT or Apache-2.0, as Glide is.
+## Credits
+
+- [Glide](https://github.com/michaelshimeles/glide) by Michael Shimeles.
+  Its behavior was reverse engineered from Screen Studio; neither Glide
+  nor drift is affiliated with Screen Studio or contains its code or
+  assets.
+- Captions use [whisper.cpp](https://github.com/ggml-org/whisper.cpp).
+- Inter typeface by Rasmus Andersson.
+
+License: MIT OR Apache-2.0, same as Glide.
