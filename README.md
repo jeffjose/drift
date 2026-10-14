@@ -1,8 +1,16 @@
 <img src="docs/screenshots/icon.png" width="96" alt="Glide icon">
 
-# Glide
+# Drift
 
-**An open-source Screen Studio, built in Rust.**
+**Glide for Linux: an open-source Screen Studio, built in Rust.**
+
+Drift is a Linux (X11) port of
+[Glide](https://github.com/michaelshimeles/glide) by Michael Shimeles, and
+keeps its history so upstream changes can be merged. The engine, renderer and
+editor are Glide's, unchanged; capture, encoding and the desktop integration
+are new for Linux. The app, its binary and its `.glide` projects keep the
+Glide name. See [Linux](#linux) for how to build it and what isn't ported
+yet; the rest of this page is Glide's own.
 
 A fast, fully open-source, native Rust screen recorder for polished product
 videos on macOS. Record your screen, a window, an area or an iPhone; Glide
@@ -58,7 +66,49 @@ Screenshots use Glide's synthetic demo recordings (`glide synth`).
 See `PERFORMANCE.md` for measured recording overhead and export speed, and
 `PROGRESS.md` for the full parity table and verification notes.
 
-## Build
+## Linux
+
+Needs X11 (not Wayland), a Vulkan GPU, Rust (2024 edition), CMake and
+ffmpeg's libraries. On Debian or Ubuntu:
+
+```sh
+sudo apt install libavcodec-dev libavformat-dev libavutil-dev \
+  libswscale-dev libswresample-dev libasound2-dev
+. scripts/env.sh && cargo build --release
+~/.cache/cargo-target/screenstudio-rs/release/glide
+```
+
+Without root, `scripts/linux-deps.sh` unpacks those packages under
+`~/.cache` instead. Recording uses the GPU's encoder (NVENC) when there is
+one and x264 otherwise; system audio and the microphone come from
+PulseAudio. Settings are in `~/.config/glide` and recordings in
+`~/Videos/Glide`. Shortcuts are stored as on macOS: ⌘ is Ctrl and ⌥ is Alt,
+so recording starts and stops with Ctrl+Alt+Shift+R.
+
+Different from macOS:
+
+- X11 can't leave a window out of what it reads from the screen. The
+  recording controls are only shown where they won't be recorded (beside an
+  area or window, or on another display); recording a whole display is
+  stopped with the shortcut. The setup preview shows Glide's own window.
+- A window recording is the part of the screen the window is on, so
+  anything over it is recorded too.
+- Without a compositing manager the area and window pickers show a picture
+  of the screen taken as they open.
+
+Not ported yet: a tray icon, cameras, and fast export (frames are converted
+on one CPU thread). macOS only: iPhone and iPad recording, Apple Speech
+captions (Whisper works), voice isolation, hiding the Dock and desktop
+icons; their controls are still shown.
+
+To pick up changes from Glide:
+
+```sh
+git fetch upstream
+git merge upstream/main
+```
+
+## Build (macOS)
 
 Requires macOS 15+, Rust (2024 edition), Xcode and CMake (`brew install
 cmake`, used to build whisper.cpp for captions). The scripts set `SDKROOT`
