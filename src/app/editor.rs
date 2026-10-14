@@ -372,7 +372,7 @@ impl Editor {
         let progress = std::sync::Arc::new(crate::whisper::Progress::default());
         self.transcribe_progress = progress.clone();
         self.transcribing = Some(std::thread::spawn(move || {
-            crate::util::pool(|| crate::transcribe::transcribe_package(&pkg, engine, &progress)).map_err(|e| format!("{e:#}"))
+            crate::transcribe::transcribe_package(&pkg, engine, &progress).map_err(|e| format!("{e:#}"))
         }));
     }
 
@@ -556,7 +556,7 @@ impl Editor {
         let cancel = Arc::new(AtomicBool::new(false));
         let (p2, c2) = (progress.clone(), cancel.clone());
         let handle = std::thread::spawn(move || {
-            crate::util::pool(|| export::run(&job, &mut |f| p2.store(f.to_bits(), Ordering::Relaxed), &c2))
+            export::run(&job, &mut |f| p2.store(f.to_bits(), Ordering::Relaxed), &c2)
         });
         self.export.result = None;
         self.export.running = Some(ExportRun { progress, cancel, handle: Some(handle), output, started: Instant::now() });

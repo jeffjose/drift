@@ -6,7 +6,6 @@ pub mod art;
 pub mod bgcheck;
 pub mod gpu;
 pub mod icon;
-#[cfg_attr(target_os = "linux", path = "interop_linux.rs")]
 pub mod interop;
 pub mod text;
 

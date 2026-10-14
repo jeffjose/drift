@@ -429,7 +429,6 @@ fn transcribe_controls(ui: &mut Ui, ed: &mut Editor) {
         let text = match (ed.caption_engine, p.phase.load(Ordering::Relaxed)) {
             (Engine::Whisper(m), 0) if !m.is_downloaded() => format!("Downloading Whisper {}… {pct:.0}%", m.name()),
             (Engine::Whisper(_), _) => format!("Transcribing on device… {pct:.0}%"),
-            (Engine::Apple, _) => "Transcribing on device…".into(),
         };
         ui.horizontal(|ui| {
             ui.spinner();
@@ -438,16 +437,8 @@ fn transcribe_controls(ui: &mut Ui, ed: &mut Editor) {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
         return;
     }
-    let mut whisper = matches!(ed.caption_engine, Engine::Whisper(_));
-    row(ui, "Engine", |ui| {
-        segmented(ui, &mut whisper, &[(true, "Whisper"), (false, "Apple")]);
-    });
-    match (whisper, ed.caption_engine) {
-        (true, Engine::Apple) => ed.caption_engine = Engine::Whisper(crate::whisper::best_downloaded().unwrap_or(Model::Base)),
-        (false, Engine::Whisper(_)) => ed.caption_engine = Engine::Apple,
-        _ => {}
-    }
-    if let Engine::Whisper(mut model) = ed.caption_engine {
+    {
+        let Engine::Whisper(mut model) = ed.caption_engine;
         let label = |m: Model| {
             if m.is_downloaded() { format!("{} (downloaded)", m.name()) } else { format!("{} ({} MB download)", m.name(), m.size_mb()) }
         };
@@ -459,9 +450,7 @@ fn transcribe_controls(ui: &mut Ui, ed: &mut Editor) {
             });
         });
         ed.caption_engine = Engine::Whisper(model);
-        caption(ui, "Runs on this Mac with Whisper. Larger models are more accurate but slower.");
-    } else {
-        caption(ui, "Uses Apple's on-device speech recognition (asks for Speech Recognition access).");
+        caption(ui, "Runs on this computer with Whisper. Larger models are more accurate but slower.");
     }
     if ui.button("Transcribe microphone").clicked() {
         ed.start_transcription();

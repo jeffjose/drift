@@ -314,7 +314,7 @@ fn thumbnail(path: &Path) -> Option<crate::render::Image> {
         let img = img.to_rgba8();
         return Some(crate::render::Image { width: img.width(), height: img.height(), rgba: img.into_raw() });
     }
-    crate::util::pool(|| {
+    {
         let (p, rec) = pkg.load().ok()?;
         let mut scene = crate::engine::scene::Scene::new(p.clone(), &rec, 30.0);
         let d = scene.duration();
@@ -339,7 +339,7 @@ fn thumbnail(path: &Path) -> Option<crate::render::Image> {
         let img = r.render_to_image(&frame, &p.style);
         let _ = image::save_buffer(&thumb, &img.rgba, img.width, img.height, image::ExtendedColorType::Rgba8);
         Some(img)
-    })
+    }
 }
 
 /// True while a shortcut button waits for keys (global hotkeys are paused
@@ -577,7 +577,7 @@ pub fn record_settings(ui: &mut Ui, s: &mut Settings, dev: &mut Devices, permiss
     choice(ui, &mut s.camera, &[(false, "Screen"), (true, "Screen + Cam")]);
 
     heading(ui, "SCREEN");
-    choice(ui, &mut s.source, &[(SourceKind::Display, "Display"), (SourceKind::Window, "Window"), (SourceKind::Area, "Area"), (SourceKind::Device, "iPhone")]);
+    choice(ui, &mut s.source, &[(SourceKind::Display, "Display"), (SourceKind::Window, "Window"), (SourceKind::Area, "Area")]);
     ui.add_space(6.0);
     match s.source {
         SourceKind::Display => {
@@ -672,10 +672,6 @@ pub fn record_settings(ui: &mut Ui, s: &mut Settings, dev: &mut Devices, permiss
     heading(ui, "OPTIONS");
     ui.checkbox(&mut s.keys, "Record key presses");
     ui.checkbox(&mut s.countdown, "3 s countdown");
-    if matches!(s.source, SourceKind::Display | SourceKind::Area) {
-        ui.checkbox(&mut s.hide_desktop_icons, "Hide desktop icons");
-        ui.checkbox(&mut s.hide_dock, "Hide Dock");
-    }
     row(ui, "Frame rate", |ui| {
         segmented(ui, &mut s.fps, &[(60, "60"), (30, "30")]);
     });
@@ -820,7 +816,7 @@ impl Chrome<'_> {
         let s = &mut *self.settings;
         let mut a = Action::None;
         let r = ui.menu_button(format!("{}      ", source_name(s.source)), |ui| {
-            for k in [SourceKind::Display, SourceKind::Window, SourceKind::Area, SourceKind::Device] {
+            for k in [SourceKind::Display, SourceKind::Window, SourceKind::Area] {
                 if ui.selectable_label(s.source == k, source_name(k)).clicked() {
                     s.source = k;
                 }

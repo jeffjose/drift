@@ -41,25 +41,11 @@ pub fn list_all() -> Vec<PickWindow> {
 }
 
 /// Is this one of Glide's own windows?
-#[cfg(target_os = "macos")]
-pub fn is_own(w: &screen::WindowInfo) -> bool {
-    let me = std::process::id() as i32;
-    // SAFETY: SCWindow/SCRunningApplication accessors.
-    unsafe { w.window.owningApplication().is_some_and(|a| a.processID() == me) }
-}
-#[cfg(target_os = "linux")]
 pub fn is_own(w: &screen::WindowInfo) -> bool {
     w.pid == std::process::id() as i32
 }
 
 /// A window's frame in global points (x, y, width, height).
-#[cfg(target_os = "macos")]
-fn frame(w: &screen::WindowInfo) -> (f64, f64, f64, f64) {
-    // SAFETY: SCWindow accessor.
-    let f = unsafe { w.window.frame() };
-    (f.origin.x, f.origin.y, f.size.width, f.size.height)
-}
-#[cfg(target_os = "linux")]
 fn frame(w: &screen::WindowInfo) -> (f64, f64, f64, f64) {
     let s = w.display.scale;
     (w.rect.0 as f64 / s, w.rect.1 as f64 / s, w.rect.2 as f64 / s, w.rect.3 as f64 / s)

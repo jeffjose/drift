@@ -11,8 +11,6 @@ use crate::capture::mixer;
 use crate::render::VideoFrame;
 use crate::util::SendBox;
 
-pub mod encode;
-
 /// Register libav's formats and codecs, and keep its log to errors.
 pub fn init() {
     static ONCE: Once = Once::new();

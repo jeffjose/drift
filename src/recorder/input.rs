@@ -1,64 +1,27 @@
-//! Input logging while recording: mouse position and buttons (polled, no
-//! permission needed), the system cursor image, window bounds for window
-//! recordings, and key presses (event tap; needs Input Monitoring).
+//! Input logging while recording: the pointer's position (polled), mouse
+//! buttons and key presses (XInput2 raw events, which need no permission
+//! and arrive whoever has the keyboard), the cursor's image (XFixes), and
+//! the window's bounds for window recordings.
+//!
+//! Positions are in X screen pixels; times are `capture::host_now` seconds.
 
 use std::collections::HashMap;
-use std::ffi::c_void;
-use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
-
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use objc2::rc::Retained;
-use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSCursor, NSImage};
-use objc2_core_foundation::{CGPoint, CGRect};
-use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString};
+use x11rb::connection::Connection;
+use x11rb::protocol::Event;
+use x11rb::protocol::xfixes::{self, ConnectionExt as _};
+use x11rb::protocol::xinput::{self, ConnectionExt as _};
+use x11rb::protocol::xproto::ConnectionExt as _;
 
+use crate::capture::host_now;
+use crate::capture::x11::X;
 use crate::engine::geom::Rect;
 use crate::project::recording::{CursorImage, MouseKind, mods};
-use crate::util::*;
-
-#[link(name = "CoreGraphics", kind = "framework")]
-unsafe extern "C" {
-    fn CGEventCreate(source: *const c_void) -> *mut c_void;
-    fn CGEventGetLocation(event: *const c_void) -> CGPoint;
-    fn CGEventSourceButtonState(state: i32, button: u32) -> bool;
-    fn CGEventTapCreate(
-        tap: u32,
-        place: u32,
-        options: u32,
-        mask: u64,
-        callback: extern "C" fn(*mut c_void, u32, *mut c_void, *mut c_void) -> *mut c_void,
-        info: *mut c_void,
-    ) -> *mut c_void;
-    fn CGEventTapEnable(tap: *mut c_void, enable: bool);
-    fn CGEventGetFlags(event: *const c_void) -> u64;
-    fn CGEventGetIntegerValueField(event: *const c_void, field: u32) -> i64;
-    fn CGEventKeyboardGetUnicodeString(event: *const c_void, max: usize, actual: *mut usize, buf: *mut u16);
-    fn CGWindowListCopyWindowInfo(option: u32, window: u32) -> *const c_void;
-    pub fn CGDisplayBounds(display: u32) -> CGRect;
-}
-
-#[link(name = "CoreFoundation", kind = "framework")]
-unsafe extern "C" {
-    fn CFRelease(cf: *const c_void);
-    fn CFMachPortCreateRunLoopSource(alloc: *const c_void, port: *mut c_void, order: isize) -> *mut c_void;
-    fn CFRunLoopGetCurrent() -> *mut c_void;
-    fn CFRunLoopAddSource(rl: *mut c_void, source: *mut c_void, mode: *const c_void);
-    fn CFRunLoopRunInMode(mode: *const c_void, seconds: f64, return_after_source: bool) -> i32;
-    static kCFRunLoopCommonModes: *const c_void;
-    static kCFRunLoopDefaultMode: *const c_void;
-}
-
-const COMBINED_SESSION_STATE: i32 = 0;
-const KEYBOARD_EVENT_KEYCODE: u32 = 9;
-const EVENT_KEY_DOWN: u32 = 10;
-const EVENT_KEY_UP: u32 = 11;
-const EVENT_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
-const LIST_INCLUDING_WINDOW: u32 = 1 << 3;
 
 #[derive(Clone, Copy, Debug)]
 pub struct RawMouse {
@@ -84,7 +47,7 @@ pub struct InputLog {
     pub mouse: Vec<RawMouse>,
     pub keys: Vec<RawKey>,
     pub cursors: Vec<CursorImage>,
-    /// Window bounds over time (host seconds, global points).
+    /// Window bounds over time (host seconds, screen pixels).
     pub bounds: Vec<(f64, Rect)>,
     /// Whether key logging was available.
     pub keys_enabled: bool,
@@ -92,325 +55,234 @@ pub struct InputLog {
 
 pub struct InputLogger {
     stop: Arc<AtomicBool>,
-    poll: Option<JoinHandle<InputLog>>,
-    keys: Arc<Mutex<Vec<RawKey>>>,
-    tap_thread: Option<JoinHandle<()>>,
-    keys_enabled: Arc<AtomicBool>,
+    thread: Option<JoinHandle<InputLog>>,
 }
 
-fn mouse_location() -> CGPoint {
-    unsafe {
-        let e = CGEventCreate(std::ptr::null());
-        if e.is_null() {
-            return CGPoint::new(0.0, 0.0);
-        }
-        let p = CGEventGetLocation(e);
-        CFRelease(e);
-        p
+/// What's seen of a window, in screen pixels, if it still exists.
+pub fn window_bounds(x: &X, id: u32) -> Option<Rect> {
+    x.window(id).map(|w| Rect::new(w.rect.0 as f64, w.rect.1 as f64, w.rect.2 as f64, w.rect.3 as f64))
+}
+
+/// The names themes give the cursors Glide draws itself.
+fn system_cursor(name: &str) -> Option<&'static str> {
+    match name {
+        "left_ptr" | "default" | "arrow" | "top_left_arrow" => Some("arrow"),
+        "xterm" | "text" | "ibeam" => Some("ibeam"),
+        "hand1" | "hand2" | "pointer" | "pointing_hand" => Some("pointing-hand"),
+        _ => None,
     }
-}
-
-/// Bounds of a window in global points, if it still exists.
-pub fn window_bounds(id: u32) -> Option<Rect> {
-    unsafe {
-        let arr = CGWindowListCopyWindowInfo(LIST_INCLUDING_WINDOW, id);
-        if arr.is_null() {
-            return None;
-        }
-        let list: &NSArray<NSDictionary<NSString, objc2::runtime::AnyObject>> = &*(arr as *const _);
-        let mut out = None;
-        if let Some(info) = list.firstObject()
-            && let Some(b) = info.objectForKey(&ns("kCGWindowBounds"))
-            && let Ok(b) = b.downcast::<NSDictionary>()
-        {
-            let b: Retained<NSDictionary<NSString, NSNumber>> = Retained::cast_unchecked(b);
-            let get = |k: &str| b.objectForKey(&ns(k)).map_or(0.0, |n| n.doubleValue());
-            out = Some(Rect::new(get("X"), get("Y"), get("Width"), get("Height")));
-        }
-        CFRelease(arr);
-        out
-    }
-}
-
-fn hash_bytes(b: &[u8]) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    b.hash(&mut h);
-    h.finish()
-}
-
-fn tiff_hash(image: &NSImage) -> Option<u64> {
-    let tiff = image.TIFFRepresentation()?;
-    Some(hash_bytes(&tiff.to_vec()))
-}
-
-/// A class cursor by selector name, without panicking when AppKit isn't
-/// initialised (the bindings assume non-NULL).
-fn class_cursor(name: &str) -> Option<Retained<NSCursor>> {
-    use objc2::{ClassType, msg_send};
-    let cls = NSCursor::class();
-    unsafe {
-        match name {
-            "arrowCursor" => msg_send![cls, arrowCursor],
-            "IBeamCursor" => msg_send![cls, IBeamCursor],
-            "pointingHandCursor" => msg_send![cls, pointingHandCursor],
-            "closedHandCursor" => msg_send![cls, closedHandCursor],
-            "openHandCursor" => msg_send![cls, openHandCursor],
-            "crosshairCursor" => msg_send![cls, crosshairCursor],
-            "resizeLeftRightCursor" => msg_send![cls, resizeLeftRightCursor],
-            "resizeUpDownCursor" => msg_send![cls, resizeUpDownCursor],
-            "operationNotAllowedCursor" => msg_send![cls, operationNotAllowedCursor],
-            "currentSystemCursor" => msg_send![cls, currentSystemCursor],
-            _ => None,
-        }
-    }
-}
-
-/// Hashes of well-known system cursors, to name what we capture.
-fn known_cursors() -> HashMap<u64, &'static str> {
-    [
-        ("arrow", "arrowCursor"),
-        ("ibeam", "IBeamCursor"),
-        ("pointing-hand", "pointingHandCursor"),
-        ("closed-hand", "closedHandCursor"),
-        ("open-hand", "openHandCursor"),
-        ("crosshair", "crosshairCursor"),
-        ("resize-left-right", "resizeLeftRightCursor"),
-        ("resize-up-down", "resizeUpDownCursor"),
-        ("not-allowed", "operationNotAllowedCursor"),
-    ]
-    .iter()
-    .filter_map(|(n, sel)| Some((tiff_hash(&class_cursor(sel)?.image())?, *n)))
-    .collect()
-}
-
-/// Save the largest representation of a cursor image as PNG.
-fn save_png(image: &NSImage, path: &std::path::Path) -> bool {
-    let Some(tiff) = image.TIFFRepresentation() else { return false };
-    let reps = NSBitmapImageRep::imageRepsWithData(&tiff);
-    let best = reps
-        .iter()
-        .filter_map(|r| r.downcast::<NSBitmapImageRep>().ok())
-        .max_by_key(|r| r.pixelsWide());
-    let Some(rep) = best else { return false };
-    let Some(png) = (unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new()) }) else {
-        return false;
-    };
-    std::fs::write(path, png.to_vec()).is_ok()
 }
 
 struct CursorTracker {
     dir: PathBuf,
-    known: HashMap<u64, &'static str>,
-    seen: HashMap<u64, u32>,
+    scale: f64,
+    /// Cursor serial to index in `images`.
+    seen: HashMap<u32, u32>,
     images: Vec<CursorImage>,
     current: u32,
 }
 
 impl CursorTracker {
-    fn sample(&mut self) {
-        objc2::rc::autoreleasepool(|_| {
-            let Some(cursor) = class_cursor("currentSystemCursor") else { return };
-            let image = cursor.image();
-            let Some(h) = tiff_hash(&image) else { return };
-            if let Some(&id) = self.seen.get(&h) {
-                self.current = id;
-                return;
-            }
-            let id = self.images.len() as u32;
-            let size = image.size();
-            let hot = cursor.hotSpot();
-            let file = format!("cursor-{id}.png");
-            let saved = save_png(&image, &self.dir.join(&file));
-            self.images.push(CursorImage {
-                id,
-                file: saved.then_some(file),
-                hotspot: (hot.x / size.width.max(1.0), hot.y / size.height.max(1.0)),
-                size: (size.width, size.height),
-                system: self.known.get(&h).map(|s| s.to_string()),
-            });
-            self.seen.insert(h, id);
+    fn sample(&mut self, x: &X) {
+        let Some(c) = x.conn.xfixes_get_cursor_image_and_name().ok().and_then(|c| c.reply().ok()) else { return };
+        if let Some(&id) = self.seen.get(&c.cursor_serial) {
             self.current = id;
+            return;
+        }
+        let (w, h) = (c.width as u32, c.height as u32);
+        if w == 0 || h == 0 || c.cursor_image.len() < (w * h) as usize {
+            return;
+        }
+        let id = self.images.len() as u32;
+        // ARGB with the colour already multiplied by alpha: undo that.
+        let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+        for px in &c.cursor_image[..(w * h) as usize] {
+            let [b, g, r, a] = px.to_le_bytes();
+            let un = |v: u8| if a == 0 { 0 } else { ((v as u32 * 255 + a as u32 / 2) / a as u32).min(255) as u8 };
+            rgba.extend_from_slice(&[un(r), un(g), un(b), a]);
+        }
+        let file = format!("cursor-{id}.png");
+        let saved = image::save_buffer(self.dir.join(&file), &rgba, w, h, image::ExtendedColorType::Rgba8).is_ok();
+        let name = String::from_utf8_lossy(&c.name).into_owned();
+        self.images.push(CursorImage {
+            id,
+            file: saved.then_some(file),
+            hotspot: (c.xhot as f64 / w as f64, c.yhot as f64 / h as f64),
+            size: (w as f64 / self.scale, h as f64 / self.scale),
+            system: system_cursor(&name).map(str::to_string),
         });
+        self.seen.insert(c.cursor_serial, id);
+        self.current = id;
     }
 }
 
-/// Label for a key code (specials as glyphs, else the typed character).
-fn key_label(code: u16, event: *const c_void) -> String {
-    let special = match code {
-        36 | 76 => "⏎",
-        48 => "⇥",
-        49 => "Space",
-        51 => "⌫",
-        53 => "⎋",
-        117 => "⌦",
-        123 => "←",
-        124 => "→",
-        125 => "↓",
-        126 => "↑",
-        115 => "Home",
-        119 => "End",
-        116 => "⇞",
-        121 => "⇟",
-        122 => "F1",
-        120 => "F2",
-        99 => "F3",
-        118 => "F4",
-        96 => "F5",
-        97 => "F6",
-        98 => "F7",
-        100 => "F8",
-        101 => "F9",
-        109 => "F10",
-        103 => "F11",
-        111 => "F12",
+/// Keycodes to keysyms, as the server maps them.
+struct Keymap {
+    first: u8,
+    per: usize,
+    syms: Vec<u32>,
+}
+
+impl Keymap {
+    fn load(x: &X) -> Option<Keymap> {
+        let setup = x.conn.setup();
+        let (first, last) = (setup.min_keycode, setup.max_keycode);
+        let r = x.conn.get_keyboard_mapping(first, last - first + 1).ok()?.reply().ok()?;
+        Some(Keymap { first, per: r.keysyms_per_keycode as usize, syms: r.keysyms })
+    }
+
+    fn sym(&self, code: u32, shifted: bool) -> u32 {
+        let Some(i) = code.checked_sub(self.first as u32).map(|i| i as usize * self.per) else { return 0 };
+        let plain = self.syms.get(i).copied().unwrap_or(0);
+        let shift = if self.per > 1 { self.syms.get(i + 1).copied().unwrap_or(0) } else { 0 };
+        if shifted && shift != 0 { shift } else { plain }
+    }
+}
+
+/// The modifier a keysym is, if it is one.
+fn modifier(sym: u32) -> Option<u8> {
+    match sym {
+        0xffe1 | 0xffe2 => Some(mods::SHIFT),
+        0xffe3 | 0xffe4 => Some(mods::CTRL),
+        0xffe7..=0xffea => Some(mods::OPT),
+        0xffeb | 0xffec => Some(mods::CMD),
+        // Caps Lock, Num Lock, level shifts and the like: not shown.
+        0xffe5 | 0xffe6 | 0xffed | 0xffee | 0xff7f | 0xfe00..=0xfe0f => Some(0),
+        _ => None,
+    }
+}
+
+/// Label for a key (specials as glyphs, else the typed character), as the
+/// macOS build writes them.
+fn key_label(sym: u32) -> String {
+    let special = match sym {
+        0xff0d | 0xff8d => "⏎",
+        0xff09 | 0xfe20 => "⇥",
+        0x20 => "Space",
+        0xff08 => "⌫",
+        0xff1b => "⎋",
+        0xffff => "⌦",
+        0xff51 => "←",
+        0xff53 => "→",
+        0xff54 => "↓",
+        0xff52 => "↑",
+        0xff50 => "Home",
+        0xff57 => "End",
+        0xff55 => "⇞",
+        0xff56 => "⇟",
         _ => "",
     };
     if !special.is_empty() {
         return special.into();
     }
-    let mut buf = [0u16; 8];
-    let mut n = 0usize;
-    unsafe { CGEventKeyboardGetUnicodeString(event, buf.len(), &mut n, buf.as_mut_ptr()) };
-    let s = String::from_utf16_lossy(&buf[..n.min(buf.len())]);
-    let s: String = s.chars().filter(|c| !c.is_control()).collect();
-    s.to_uppercase()
-}
-
-fn flags_to_mods(f: u64) -> u8 {
-    let mut m = 0;
-    if f & 0x0010_0000 != 0 {
-        m |= mods::CMD;
+    if (0xffbe..=0xffc9).contains(&sym) {
+        return format!("F{}", sym - 0xffbe + 1);
     }
-    if f & 0x0002_0000 != 0 {
-        m |= mods::SHIFT;
-    }
-    if f & 0x0008_0000 != 0 {
-        m |= mods::OPT;
-    }
-    if f & 0x0004_0000 != 0 {
-        m |= mods::CTRL;
-    }
-    if f & 0x0080_0000 != 0 {
-        m |= mods::FN;
-    }
-    m
-}
-
-struct TapCtx {
-    keys: Arc<Mutex<Vec<RawKey>>>,
-    tap: AtomicPtr<c_void>,
-}
-
-extern "C" fn on_key(_proxy: *mut c_void, ty: u32, event: *mut c_void, info: *mut c_void) -> *mut c_void {
-    let ctx = unsafe { &*(info as *const TapCtx) };
-    if ty == EVENT_TAP_DISABLED_BY_TIMEOUT {
-        let tap = ctx.tap.load(Ordering::SeqCst);
-        if !tap.is_null() {
-            unsafe { CGEventTapEnable(tap, true) };
-        }
-        return event;
-    }
-    if ty == EVENT_KEY_DOWN || ty == EVENT_KEY_UP {
-        let code = unsafe { CGEventGetIntegerValueField(event, KEYBOARD_EVENT_KEYCODE) } as u16;
-        let k = RawKey {
-            host: secs(host_now()),
-            code,
-            key: key_label(code, event),
-            mods: flags_to_mods(unsafe { CGEventGetFlags(event) }),
-            down: ty == EVENT_KEY_DOWN,
-        };
-        ctx.keys.lock().unwrap().push(k);
-    }
-    event
+    // Keypad digits and operators sit 0xff80 above their ASCII.
+    let sym = if (0xffaa..=0xffb9).contains(&sym) { sym - 0xff80 } else { sym };
+    let ch = match sym {
+        0x21..=0xff => char::from_u32(sym),
+        0x0100_0000..=0x0110_ffff => char::from_u32(sym - 0x0100_0000),
+        _ => None,
+    };
+    ch.filter(|c| !c.is_control()).map(|c| c.to_uppercase().collect()).unwrap_or_default()
 }
 
 impl InputLogger {
-    /// Start logging. `window` = window id to track for window recordings.
-    pub fn start(cursor_dir: PathBuf, window: Option<u32>, log_keys: bool) -> Self {
+    /// Start logging. `window` = window id to track for window recordings;
+    /// `scale` = pixels per point where the recording happens.
+    pub fn start(cursor_dir: PathBuf, window: Option<u32>, log_keys: bool, scale: f64) -> Self {
         let _ = std::fs::create_dir_all(&cursor_dir);
         let stop = Arc::new(AtomicBool::new(false));
-        let keys = Arc::new(Mutex::new(vec![]));
-        let keys_enabled = Arc::new(AtomicBool::new(false));
-        let tap_thread = log_keys.then(|| {
-            let (keys, enabled, stop) = (keys.clone(), keys_enabled.clone(), stop.clone());
-            std::thread::spawn(move || unsafe {
-                let ctx = Box::into_raw(Box::new(TapCtx { keys, tap: AtomicPtr::new(std::ptr::null_mut()) }));
-                let mask = (1u64 << EVENT_KEY_DOWN) | (1u64 << EVENT_KEY_UP);
-                // Session tap, head insert, listen-only.
-                let tap = CGEventTapCreate(1, 0, 1, mask, on_key, ctx as *mut c_void);
-                if tap.is_null() {
-                    drop(Box::from_raw(ctx));
-                    return;
-                }
-                (*ctx).tap.store(tap, Ordering::SeqCst);
-                enabled.store(true, Ordering::SeqCst);
-                let src = CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
-                let current = CFRunLoopGetCurrent();
-                CFRunLoopAddSource(current, src, kCFRunLoopCommonModes);
-                CGEventTapEnable(tap, true);
-                while !stop.load(Ordering::SeqCst) {
-                    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.2, false);
-                }
-                CGEventTapEnable(tap, false);
-                CFRelease(src);
-                CFRelease(tap);
-                drop(Box::from_raw(ctx));
-            })
-        });
-        let stop2 = stop.clone();
-        let poll = std::thread::spawn(move || {
-            let mut log = InputLog::default();
-            let mut cursors =
-                CursorTracker { dir: cursor_dir, known: known_cursors(), seen: HashMap::new(), images: vec![], current: 0 };
-            cursors.sample();
-            let mut last: Option<(f64, f64)> = None;
-            let mut buttons = [false; 2];
-            let mut tick: u64 = 0;
-            while !stop2.load(Ordering::SeqCst) {
-                let now = secs(host_now());
-                let p = mouse_location();
-                if tick % 6 == 0 {
-                    cursors.sample();
-                }
-                if let Some(w) = window
-                    && tick % 12 == 0
-                    && let Some(b) = window_bounds(w)
-                    && log.bounds.last().is_none_or(|(_, last)| *last != b)
-                {
-                    log.bounds.push((now, b));
-                }
-                let pressed = [unsafe { CGEventSourceButtonState(COMBINED_SESSION_STATE, 0) }, unsafe {
-                    CGEventSourceButtonState(COMBINED_SESSION_STATE, 1)
-                }];
-                let ev = |kind, button| RawMouse { host: now, x: p.x, y: p.y, kind, button, cursor: cursors.current };
-                for b in 0..2 {
-                    if pressed[b] != buttons[b] {
-                        log.mouse.push(ev(if pressed[b] { MouseKind::Down } else { MouseKind::Up }, b as u8));
-                        buttons[b] = pressed[b];
-                    }
-                }
-                if last != Some((p.x, p.y)) {
-                    let kind = if buttons[0] { MouseKind::Drag } else { MouseKind::Move };
-                    log.mouse.push(ev(kind, 0));
-                    last = Some((p.x, p.y));
-                }
-                tick += 1;
-                std::thread::sleep(Duration::from_micros(8_333));
-            }
-            log.cursors = cursors.images;
-            log
-        });
-        InputLogger { stop, poll: Some(poll), keys, tap_thread, keys_enabled }
+        let st = stop.clone();
+        let thread = std::thread::spawn(move || run(cursor_dir, window, log_keys, scale, &st).unwrap_or_default());
+        InputLogger { stop, thread: Some(thread) }
     }
 
     pub fn stop(mut self) -> InputLog {
         self.stop.store(true, Ordering::SeqCst);
-        if let Some(t) = self.tap_thread.take() {
-            let _ = t.join();
-        }
-        let mut log = self.poll.take().map(|t| t.join().unwrap_or_default()).unwrap_or_default();
-        log.keys = std::mem::take(&mut *self.keys.lock().unwrap());
-        log.keys_enabled = self.keys_enabled.load(Ordering::SeqCst);
-        log
+        self.thread.take().and_then(|t| t.join().ok()).unwrap_or_default()
     }
+}
+
+fn run(cursor_dir: PathBuf, window: Option<u32>, log_keys: bool, scale: f64, stop: &AtomicBool) -> Option<InputLog> {
+    let x = X::open().ok()?;
+    let mut log = InputLog::default();
+    let mut wanted = xinput::XIEventMask::RAW_BUTTON_PRESS | xinput::XIEventMask::RAW_BUTTON_RELEASE;
+    if log_keys {
+        wanted |= xinput::XIEventMask::RAW_KEY_PRESS | xinput::XIEventMask::RAW_KEY_RELEASE;
+    }
+    // Device 1 is every master device (XIAllMasterDevices).
+    let raw = x.conn.xinput_xi_query_version(2, 0).ok().and_then(|c| c.reply().ok()).is_some()
+        && x.conn.xinput_xi_select_events(x.root, &[xinput::EventMask { deviceid: 1, mask: vec![wanted] }]).ok().and_then(|c| c.check().ok()).is_some();
+    log.keys_enabled = raw && log_keys;
+    let keymap = Keymap::load(&x);
+    let mut cursors = CursorTracker { dir: cursor_dir, scale, seen: HashMap::new(), images: vec![], current: 0 };
+    if x.conn.xfixes_query_version(4, 0).ok().and_then(|c| c.reply().ok()).is_some() {
+        let _ = x.conn.xfixes_select_cursor_input(x.root, xfixes::CursorNotifyMask::DISPLAY_CURSOR);
+    }
+    cursors.sample(&x);
+    let _ = x.conn.flush();
+
+    let (mut last, mut held, mut mod_state) = ((i32::MIN, i32::MIN), 0u32, 0u8);
+    if let Some((_, _, mask)) = x.pointer() {
+        // Shift, Control, Mod1 (Alt) and Mod4 (Super) in the core mask.
+        for (bit, m) in [(1u16, mods::SHIFT), (4, mods::CTRL), (8, mods::OPT), (64, mods::CMD)] {
+            if mask & bit != 0 {
+                mod_state |= m;
+            }
+        }
+    }
+    let mut bounds_at = Instant::now() - Duration::from_secs(1);
+    while !stop.load(Ordering::SeqCst) {
+        let now = host_now();
+        let Some((px, py, _)) = x.pointer() else { break };
+        while let Ok(Some(event)) = x.conn.poll_for_event() {
+            match event {
+                Event::XfixesCursorNotify(_) => cursors.sample(&x),
+                Event::XinputRawButtonPress(e) | Event::XinputRawButtonRelease(e) => {
+                    // 1 left, 2 middle, 3 right; 4 to 7 are the scroll wheel.
+                    let button = match e.detail {
+                        1 => 0,
+                        3 => 1,
+                        2 | 8.. => 2,
+                        _ => continue,
+                    };
+                    let down = e.event_type == xinput::RAW_BUTTON_PRESS_EVENT;
+                    held = if down { held | 1 << button } else { held & !(1 << button) };
+                    let kind = if down { MouseKind::Down } else { MouseKind::Up };
+                    log.mouse.push(RawMouse { host: now, x: px as f64, y: py as f64, kind, button, cursor: cursors.current });
+                }
+                Event::XinputRawKeyPress(e) | Event::XinputRawKeyRelease(e) => {
+                    let Some(map) = &keymap else { continue };
+                    let down = e.event_type == xinput::RAW_KEY_PRESS_EVENT;
+                    if let Some(m) = modifier(map.sym(e.detail, false)) {
+                        mod_state = if down { mod_state | m } else { mod_state & !m };
+                        continue;
+                    }
+                    let key = key_label(map.sym(e.detail, mod_state & mods::SHIFT != 0));
+                    log.keys.push(RawKey { host: now, code: e.detail as u16, key, mods: mod_state, down });
+                }
+                _ => {}
+            }
+        }
+        if (px, py) != last {
+            last = (px, py);
+            let kind = if held & 1 != 0 { MouseKind::Drag } else { MouseKind::Move };
+            log.mouse.push(RawMouse { host: now, x: px as f64, y: py as f64, kind, button: 0, cursor: cursors.current });
+        }
+        if let Some(id) = window
+            && bounds_at.elapsed() >= Duration::from_millis(16)
+        {
+            bounds_at = Instant::now();
+            if let Some(b) = window_bounds(&x, id)
+                && log.bounds.last().is_none_or(|(_, last)| *last != b)
+            {
+                log.bounds.push((now, b));
+            }
+        }
+        std::thread::sleep(Duration::from_millis(4));
+    }
+    log.cursors = cursors.images;
+    Some(log)
 }

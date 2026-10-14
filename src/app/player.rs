@@ -133,18 +133,7 @@ pub struct AudioPreview {
     pub error: Option<String>,
     /// When the output was last restarted (at most once a second).
     restarted: Option<Instant>,
-    /// Held while playing, so App Nap doesn't throttle the picture when
-    /// Glide isn't the frontmost app.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    activity: Option<Activity>,
 }
-
-#[cfg(target_os = "macos")]
-type Activity = SendBox<objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_foundation::NSObjectProtocol>>>;
-/// macOS is told playback is under way so it doesn't nap the app; nothing
-/// naps it elsewhere.
-#[cfg(not(target_os = "macos"))]
-type Activity = ();
 
 impl AudioPreview {
     pub fn new() -> Self {
@@ -170,7 +159,6 @@ impl AudioPreview {
             mixing: Arc::new(AtomicU64::new(0)),
             error: None,
             restarted: None,
-            activity: None,
         }
     }
 
@@ -244,12 +232,6 @@ impl AudioPreview {
             eprintln!("glide: audio output: {e:#}");
             self.output = None;
         }
-        #[cfg(target_os = "macos")]
-        if self.activity.is_none() {
-            use objc2_foundation::{NSActivityOptions, NSProcessInfo, NSString};
-            let token = NSProcessInfo::processInfo().beginActivityWithOptions_reason(NSActivityOptions::UserInitiated, &NSString::from_str("playing a recording"));
-            self.activity = Some(SendBox(token));
-        }
         if let Some(o) = &mut self.output {
             o.beat = (u64::MAX, Instant::now());
             if let Err(e) = o.stream.0.play() {
@@ -262,13 +244,8 @@ impl AudioPreview {
 
     pub fn pause(&mut self) {
         self.shared.playing.store(false, Ordering::Relaxed);
-        #[cfg(target_os = "macos")]
-        if let Some(t) = self.activity.take() {
-            // SAFETY: the token came from beginActivity and is ended once.
-            unsafe { objc2_foundation::NSProcessInfo::processInfo().endActivity(&t.0) };
-        }
         if let Some(o) = &self.output {
-            // Stopping the device lets the Mac sleep; restarting is instant.
+            // Stopping the device lets the computer sleep; restarting is instant.
             let _ = o.stream.0.pause();
         }
     }

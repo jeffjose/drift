@@ -1,19 +1,18 @@
-//! Glide: a fast, native macOS screen recorder and editor.
+//! Drift: Glide, a fast native screen recorder and editor, on Linux.
 //!
-//! Behaviour was reverse engineered from Screen Studio with REA (see
-//! `analysis/SCREEN_STUDIO.md`); all code here is written independently.
-//! The capture pipeline builds on rec-rs by Michael Shimeles.
+//! The engine, renderer and editor are Glide's (by Michael Shimeles, for
+//! macOS), whose behaviour was reverse engineered from Screen Studio with
+//! REA (see `analysis/SCREEN_STUDIO.md`). Capture (X11, PulseAudio),
+//! media (libav) and the desktop integration are written for Linux.
 
 pub mod engine;
 pub mod project;
 pub mod render;
 pub mod synth;
-#[cfg_attr(target_os = "linux", path = "capture/linux/mod.rs")]
 pub mod capture;
 pub mod util;
 pub mod media;
 pub mod export;
-#[cfg_attr(target_os = "linux", path = "recorder/linux.rs")]
 pub mod recorder;
 pub mod transcribe;
 pub mod exposure;

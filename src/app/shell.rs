@@ -1,5 +1,5 @@
 //! What the app asks of the desktop on Linux: displays, the file manager,
-//! the trash, the wallpaper. (`macos.rs` is its counterpart.)
+//! the trash, the wallpaper.
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -24,13 +24,6 @@ pub fn fullscreen_display(window: &Window) -> Option<u32> {
 pub fn main_display() -> u32 {
     1
 }
-
-/// The window manager draws the title bar: there are no buttons to place.
-pub fn inset_traffic_lights(_window: &Window, _x: f64, _bar_h: f64) {}
-
-/// macOS apps are brought forward as a whole; here windows are focused
-/// one by one, where they're shown.
-pub fn activate() {}
 
 fn run(program: &str, args: &[&std::ffi::OsStr]) -> bool {
     Command::new(program).args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().is_ok()
@@ -183,10 +176,6 @@ pub fn window_number(window: &Window) -> Option<isize> {
         _ => None,
     }
 }
-
-/// macOS hands opened documents to a running app through an event; here
-/// they come as arguments.
-pub fn install_open_handler() {}
 
 /// Tell the capture code the scale each monitor's windows are drawn at,
 /// so points mean the same to the picker overlays and the recorder.

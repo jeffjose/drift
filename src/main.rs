@@ -240,11 +240,6 @@ enum Cmd {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    // AppKit must be initialised for cursor and device queries.
-    #[cfg(target_os = "macos")]
-    if let Some(mtm) = objc2::MainThreadMarker::new() {
-        let _ = objc2_app_kit::NSApplication::sharedApplication(mtm);
-    }
     match cli.cmd {
         Some(Cmd::Frame { project, synthetic, time, height, style, output }) => {
             frame(project, synthetic, time, height, style, output)
@@ -639,14 +634,7 @@ fn record(
     let target = if pattern {
         Target::Pattern
     } else if let Some(id) = device {
-        glide::capture::camera::enable_screen_capture_devices();
-        std::thread::sleep(std::time::Duration::from_millis(1500));
-        let found = glide::capture::camera::ios_devices();
-        let d = found
-            .iter()
-            .find(|d| d.id == id || d.name.to_lowercase().contains(&id.to_lowercase()))
-            .ok_or_else(|| anyhow::anyhow!("no iPhone/iPad matches {id:?} (see `glide devices`)"))?;
-        Target::Device { id: d.id.clone() }
+        Target::Device { id }
     } else if let Some(id) = window {
         Target::Window { id }
     } else if let Some(a) = area {
@@ -724,13 +712,6 @@ fn devices() -> Result<()> {
     println!("Microphones:");
     for m in camera::microphones() {
         println!("  {}  ({})", m.name, m.id);
-    }
-    // iOS devices appear shortly after screen-capture devices are enabled.
-    camera::enable_screen_capture_devices();
-    std::thread::sleep(std::time::Duration::from_millis(1500));
-    println!("iPhone / iPad:");
-    for d in camera::ios_devices() {
-        println!("  {}  ({})", d.name, d.id);
     }
     Ok(())
 }

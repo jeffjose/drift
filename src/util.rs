@@ -1,22 +1,7 @@
 //! Small helpers shared across the crate.
 
-#[cfg(target_os = "macos")]
-mod mac;
-#[cfg(target_os = "macos")]
-pub use mac::*;
-
-/// Run `f` inside an autorelease pool (macOS); elsewhere just run it.
-#[cfg(target_os = "macos")]
-pub fn pool<R>(f: impl FnOnce() -> R) -> R {
-    objc2::rc::autoreleasepool(|_| f())
-}
-#[cfg(not(target_os = "macos"))]
-pub fn pool<R>(f: impl FnOnce() -> R) -> R {
-    f()
-}
-
-/// Wrapper asserting a CoreFoundation/ObjC value may cross threads. All uses
-/// are serialized by a Mutex or are documented thread-safe CF types.
+/// Wrapper asserting a value may cross threads. All uses are serialized by
+/// a Mutex or are of types documented as thread-safe.
 pub struct SendBox<T>(pub T);
 unsafe impl<T> Send for SendBox<T> {}
 unsafe impl<T> Sync for SendBox<T> {}

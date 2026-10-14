@@ -1,16 +1,9 @@
-//! Reading recorded media: a platform decoder (AVAssetReader on macOS,
-//! libav on Linux) under random-access and prefetching frame sources.
+//! Reading and writing media with libav: a sequential decoder under
+//! random-access and prefetching frame sources, and the movie writers.
 
-#[cfg(target_os = "macos")]
-mod mac;
-#[cfg(target_os = "macos")]
-pub use mac::*;
-#[cfg(target_os = "linux")]
-mod linux;
-#[cfg(target_os = "linux")]
-pub use linux::*;
-
-#[cfg_attr(target_os = "linux", path = "writer_linux.rs")]
+mod decode;
+pub use decode::*;
+pub mod encode;
 pub mod writer;
 
 use std::path::Path;
@@ -77,7 +70,7 @@ impl Prefetch {
         let (tx, rx) = std::sync::mpsc::sync_channel(6);
         let thread = std::thread::spawn(move || {
             for (i, t) in times.into_iter().enumerate() {
-                let f = crate::util::pool(|| src.frame_at(t).cloned());
+                let f = src.frame_at(t).cloned();
                 if tx.send((i, f)).is_err() {
                     break;
                 }

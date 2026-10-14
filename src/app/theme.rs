@@ -12,7 +12,7 @@ pub static INTER_REGULAR: &[u8] = include_bytes!("../../assets/fonts/Inter-Regul
 pub static INTER_MEDIUM: &[u8] = include_bytes!("../../assets/fonts/Inter-Medium.ttf");
 pub static INTER_SEMIBOLD: &[u8] = include_bytes!("../../assets/fonts/Inter-SemiBold.ttf");
 
-/// macOS system blue, used when the system accent can't be read.
+/// The accent colour (macOS's system blue, as Glide uses).
 pub const MAC_BLUE: Color32 = Color32::from_rgb(0x00, 0x7a, 0xff);
 
 /// Body text (13pt) and secondary text (11pt), as in AppKit.
@@ -20,22 +20,15 @@ pub const BODY: f32 = 13.0;
 pub const SECONDARY: f32 = 11.0;
 /// Height of the unified toolbar.
 pub const TOOLBAR_H: f32 = 40.0;
-/// Traffic lights: left inset and the height of the bar they are centred in (points).
-pub const TRAFFIC_LIGHTS: (f64, f64) = (14.0, TOOLBAR_H as f64);
-/// Horizontal room the traffic lights need from the window's left edge.
-pub const TRAFFIC_LIGHTS_W: f32 = 88.0;
 
-/// Whether the main window is in full screen, where AppKit hides the traffic
-/// lights (set from redraw).
+/// Whether the main window is in full screen (set from redraw).
 pub static FULLSCREEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// The display the main window is full screen on (0 when it isn't).
 pub static FULLSCREEN_DISPLAY: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// Left inset of the toolbar's content: past the traffic lights, or a plain
-/// margin in full screen, where there are none.
+/// Left inset of the toolbar's content.
 pub fn toolbar_left() -> i8 {
-    // Only macOS draws window buttons over the toolbar.
-    if cfg!(not(target_os = "macos")) || FULLSCREEN.load(std::sync::atomic::Ordering::Relaxed) { 16 } else { TRAFFIC_LIGHTS_W as i8 }
+    16
 }
 
 static ACCENT: AtomicU32 = AtomicU32::new(u32::from_be_bytes([0x00, 0x7a, 0xff, 0xff]));
@@ -52,29 +45,9 @@ pub fn set_accent(c: Color32) {
     );
 }
 
-/// The user's accent colour from System Settings › Appearance (falls back to system blue).
+/// The accent colour: Glide's blue (desktops here have no one setting to
+/// read it from).
 pub fn system_accent() -> Color32 {
-    #[cfg(target_os = "macos")]
-    {
-        // `AppleAccentColor` is absent for the default (blue) and multicolour settings.
-        let out = std::process::Command::new("/usr/bin/defaults")
-            .args(["read", "-g", "AppleAccentColor"])
-            .output();
-        if let Ok(o) = out
-            && o.status.success()
-        {
-            return match String::from_utf8_lossy(&o.stdout).trim() {
-                "-1" => Color32::from_rgb(0x8c, 0x8c, 0x8c),
-                "0" => Color32::from_rgb(0xff, 0x3b, 0x30),
-                "1" => Color32::from_rgb(0xff, 0x95, 0x00),
-                "2" => Color32::from_rgb(0xff, 0xcc, 0x00),
-                "3" => Color32::from_rgb(0x28, 0xcd, 0x41),
-                "5" => Color32::from_rgb(0xaf, 0x52, 0xde),
-                "6" => Color32::from_rgb(0xff, 0x2d, 0x55),
-                _ => MAC_BLUE,
-            };
-        }
-    }
     MAC_BLUE
 }
 
