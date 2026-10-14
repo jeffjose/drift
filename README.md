@@ -1,13 +1,13 @@
 # drift
 
-A screen recorder for Linux that makes the recording look finished.
-Record the screen, a window or an area; drift draws the cursor again
-larger and smoother, zooms into what you click, sets the picture on a
-background with a shadow and rounded corners, and exports MP4 or GIF. It
-is a port to X11 of [Glide](https://github.com/michaelshimeles/glide), by
-Michael Shimeles, which does this on macOS: the engine, the renderer and
-the editor are Glide's as they are, and what reads the screen, encodes it
-and talks to the desktop is written for Linux.
+A Linux port of [Glide](https://github.com/michaelshimeles/glide), the
+macOS screen recorder by Michael Shimeles that makes a recording look
+finished. Record the screen, a window or an area; drift draws the cursor
+again larger and smoother, zooms into what you click, sets the picture
+on a background with a shadow and rounded corners, and exports MP4 or
+GIF. The engine, the renderer and the editor are Glide's as they are;
+what reads the screen, encodes it and talks to the desktop is written
+for Linux and X11.
 
 ```sh
 glide                              # the app: record, then edit and export
