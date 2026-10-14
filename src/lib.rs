@@ -8,10 +8,12 @@ pub mod engine;
 pub mod project;
 pub mod render;
 pub mod synth;
+#[cfg_attr(target_os = "linux", path = "capture/linux/mod.rs")]
 pub mod capture;
 pub mod util;
 pub mod media;
 pub mod export;
+#[cfg_attr(target_os = "linux", path = "recorder/linux.rs")]
 pub mod recorder;
 pub mod transcribe;
 pub mod exposure;

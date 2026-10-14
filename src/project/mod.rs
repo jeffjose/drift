@@ -143,7 +143,17 @@ pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 /// Default folder for new projects.
 pub fn projects_dir() -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-    home.join("Movies").join("Glide")
+    home.join(if cfg!(target_os = "macos") { "Movies" } else { "Videos" }).join("Glide")
+}
+
+/// Where settings and presets are kept: `~/Library/Application Support/Glide`
+/// on macOS, `$XDG_CONFIG_HOME/glide` (`~/.config/glide`) elsewhere.
+pub fn config_dir() -> PathBuf {
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    if cfg!(target_os = "macos") {
+        return home.join("Library/Application Support/Glide");
+    }
+    std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| home.join(".config")).join("glide")
 }
 
 /// A new, unused package path like `~/Movies/Glide/Recording 2026-10-11 at 11.30.12.glide`.

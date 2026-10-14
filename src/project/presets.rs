@@ -10,8 +10,7 @@ use super::model::{Background, Style};
 use super::{read_json, write_json};
 
 pub fn dir() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    home.join("Library/Application Support/Glide/presets")
+    super::config_dir().join("presets")
 }
 
 fn default_marker(dir: &Path) -> PathBuf {

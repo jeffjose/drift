@@ -61,8 +61,7 @@ impl Model {
 }
 
 fn models_dir() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    home.join("Library/Application Support/Glide/models")
+    crate::project::config_dir().join("models")
 }
 
 /// The largest model already on disk.

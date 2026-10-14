@@ -112,8 +112,7 @@ impl Default for Settings {
 }
 
 fn settings_path() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    home.join("Library/Application Support/Glide/settings.json")
+    project::config_dir().join("settings.json")
 }
 
 impl Settings {
@@ -194,12 +193,7 @@ impl Devices {
             windows: screen::windows()
                 .map(|ws| {
                     // Untitled windows too (the on-screen picker offers them).
-                    let me = std::process::id() as i32;
-                    // SAFETY: SCWindow/SCRunningApplication accessors.
-                    let ws: Vec<_> = ws
-                        .into_iter()
-                        .filter(|w| !w.app.is_empty() && w.app != "Glide" && unsafe { w.window.owningApplication().is_none_or(|a| a.processID() != me) })
-                        .collect();
+                    let ws: Vec<_> = ws.into_iter().filter(|w| !w.app.is_empty() && w.app != "Glide" && !super::winpick::is_own(w)).collect();
                     let displays = crate::capture::winsize::display_sizes(&ws);
                     ws.into_iter()
                         .zip(displays)
@@ -250,11 +244,23 @@ pub struct Thumbs {
     /// One background worker renders thumbnails in order (each needs a
     /// decoder and a GPU renderer, so they're never made in parallel).
     queue: Option<std::sync::mpsc::Sender<(PathBuf, egui::Context)>>,
+    worker: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Default for Thumbs {
     fn default() -> Self {
-        Thumbs { textures: HashMap::new(), pending: Arc::new(Mutex::new(vec![])), requested: Default::default(), queue: None }
+        Thumbs { textures: HashMap::new(), pending: Arc::new(Mutex::new(vec![])), requested: Default::default(), queue: None, worker: None }
+    }
+}
+
+impl Drop for Thumbs {
+    /// Let the worker finish the thumbnail it's on: a thread still inside
+    /// the GPU driver when the process exits can crash it.
+    fn drop(&mut self) {
+        self.queue = None;
+        if let Some(w) = self.worker.take() {
+            let _ = w.join();
+        }
     }
 }
 
@@ -269,16 +275,17 @@ impl Thumbs {
         }
         if self.requested.insert(path.to_path_buf()) {
             let pending = self.pending.clone();
+            let worker = &mut self.worker;
             let tx = self.queue.get_or_insert_with(|| {
                 let (tx, rx) = std::sync::mpsc::channel::<(PathBuf, egui::Context)>();
-                std::thread::spawn(move || {
+                *worker = Some(std::thread::spawn(move || {
                     for (p, ctx) in rx {
                         if let Some(img) = thumbnail(&p) {
                             pending.lock().unwrap().push((p, img));
                             ctx.request_repaint();
                         }
                     }
-                });
+                }));
                 tx
             });
             let _ = tx.send((path.to_path_buf(), ctx.clone()));
@@ -307,7 +314,7 @@ fn thumbnail(path: &Path) -> Option<crate::render::Image> {
         let img = img.to_rgba8();
         return Some(crate::render::Image { width: img.width(), height: img.height(), rgba: img.into_raw() });
     }
-    objc2::rc::autoreleasepool(|_| {
+    crate::util::pool(|| {
         let (p, rec) = pkg.load().ok()?;
         let mut scene = crate::engine::scene::Scene::new(p.clone(), &rec, 30.0);
         let d = scene.duration();
@@ -720,7 +727,7 @@ pub fn recents(ui: &mut Ui, projects: &[ProjectEntry], thumbs: &mut Thumbs, curr
         return Action::Open(f);
     }
     if ui.button("Show projects folder").clicked() {
-        super::macos::open_folder(dir);
+        super::shell::open_folder(dir);
     }
     action
 }
@@ -758,7 +765,7 @@ fn recent_list(ui: &mut Ui, projects: &[ProjectEntry], thumbs: &mut Thumbs, curr
         }
         resp.context_menu(|ui| {
             if ui.button("Show in Finder").clicked() {
-                super::macos::reveal(&e.path);
+                super::shell::reveal(&e.path);
             }
         });
     }
@@ -1045,7 +1052,7 @@ pub fn start_view(
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.button("Open Folder").on_hover_text("Show the projects folder in Finder").clicked() {
-                        super::macos::open_folder(&s.dir());
+                        super::shell::open_folder(&s.dir());
                     }
                     let next = match s.source {
                         SourceKind::Area => "You'll drag to select the area next".to_string(),

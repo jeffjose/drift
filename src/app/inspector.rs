@@ -189,7 +189,7 @@ fn background(ui: &mut Ui, ed: &mut Editor, d: &mut Project) {
                     }
                     if ui.button("Desktop wallpaper").on_hover_text("Use your current macOS desktop picture").clicked() {
                         let tmp = std::env::temp_dir().join(format!("glide-wallpaper-{}.png", std::process::id()));
-                        match super::macos::save_desktop_wallpaper(&tmp).and_then(|_| ed.package.import_asset(&tmp, "wallpaper")) {
+                        match super::shell::save_desktop_wallpaper(&tmp).and_then(|_| ed.package.import_asset(&tmp, "wallpaper")) {
                             Ok(rel) => *path = rel,
                             Err(e) => ed.status = Some(format!("Couldn't use the desktop wallpaper: {e:#}")),
                         }

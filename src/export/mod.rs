@@ -5,6 +5,7 @@
 //! encoder, frames N+1..N+3 are already rendering.
 
 pub mod audio;
+#[cfg_attr(target_os = "linux", path = "isolate_linux.rs")]
 pub mod isolate;
 pub mod gif;
 

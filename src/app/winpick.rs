@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 
 use super::home::WindowEntry;
-use super::macos;
+use super::shell;
 use crate::capture::{screen, winsize};
 
 /// A window the picker can offer.
@@ -37,33 +37,49 @@ pub fn is_ignored(id: u32) -> bool {
 
 /// Recordable windows on every display, frontmost first per display.
 pub fn list_all() -> Vec<PickWindow> {
-    macos::display_ids().into_iter().flat_map(list).collect()
+    shell::display_ids().into_iter().flat_map(list).collect()
+}
+
+/// Is this one of Glide's own windows?
+#[cfg(target_os = "macos")]
+pub fn is_own(w: &screen::WindowInfo) -> bool {
+    let me = std::process::id() as i32;
+    // SAFETY: SCWindow/SCRunningApplication accessors.
+    unsafe { w.window.owningApplication().is_some_and(|a| a.processID() == me) }
+}
+#[cfg(target_os = "linux")]
+pub fn is_own(w: &screen::WindowInfo) -> bool {
+    w.pid == std::process::id() as i32
+}
+
+/// A window's frame in global points (x, y, width, height).
+#[cfg(target_os = "macos")]
+fn frame(w: &screen::WindowInfo) -> (f64, f64, f64, f64) {
+    // SAFETY: SCWindow accessor.
+    let f = unsafe { w.window.frame() };
+    (f.origin.x, f.origin.y, f.size.width, f.size.height)
+}
+#[cfg(target_os = "linux")]
+fn frame(w: &screen::WindowInfo) -> (f64, f64, f64, f64) {
+    let s = w.display.scale;
+    (w.rect.0 as f64 / s, w.rect.1 as f64 / s, w.rect.2 as f64 / s, w.rect.3 as f64 / s)
 }
 
 /// Recordable windows (not Glide's own) that show on `display`,
 /// frontmost first.
 pub fn list(display: u32) -> Vec<PickWindow> {
-    let (display_id, dx, dy, dw, dh) = macos::display_frame(display);
+    let (display_id, dx, dy, dw, dh) = shell::display_frame(display);
     let screen_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(dw as f32, dh as f32));
     let Ok(all) = screen::windows() else { return vec![] };
-    let me = std::process::id() as i32;
-    let all: Vec<_> = all
-        .into_iter()
-        // SAFETY: SCWindow/SCRunningApplication accessors.
-        .filter(|w| unsafe { w.window.owningApplication().is_none_or(|a| a.processID() != me) })
-        .collect();
+    let all: Vec<_> = all.into_iter().filter(|w| !is_own(w)).collect();
     let displays = winsize::display_sizes(&all);
     let order = winsize::front_to_back();
     let mut out: Vec<(usize, PickWindow)> = all
         .into_iter()
         .zip(displays)
         .filter_map(|(w, display)| {
-            // SAFETY: SCWindow accessor.
-            let f = unsafe { w.window.frame() };
-            let rect = egui::Rect::from_min_size(
-                egui::pos2((f.origin.x - dx) as f32, (f.origin.y - dy) as f32),
-                egui::vec2(f.size.width as f32, f.size.height as f32),
-            );
+            let f = frame(&w);
+            let rect = egui::Rect::from_min_size(egui::pos2((f.0 - dx) as f32, (f.1 - dy) as f32), egui::vec2(f.2 as f32, f.3 as f32));
             let visible = rect.intersect(screen_rect);
             if visible.width() < 40.0 || visible.height() < 40.0 {
                 return None;

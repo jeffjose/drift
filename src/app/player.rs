@@ -135,10 +135,16 @@ pub struct AudioPreview {
     restarted: Option<Instant>,
     /// Held while playing, so App Nap doesn't throttle the picture when
     /// Glide isn't the frontmost app.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     activity: Option<Activity>,
 }
 
+#[cfg(target_os = "macos")]
 type Activity = SendBox<objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_foundation::NSObjectProtocol>>>;
+/// macOS is told playback is under way so it doesn't nap the app; nothing
+/// naps it elsewhere.
+#[cfg(not(target_os = "macos"))]
+type Activity = ();
 
 impl AudioPreview {
     pub fn new() -> Self {
@@ -238,6 +244,7 @@ impl AudioPreview {
             eprintln!("glide: audio output: {e:#}");
             self.output = None;
         }
+        #[cfg(target_os = "macos")]
         if self.activity.is_none() {
             use objc2_foundation::{NSActivityOptions, NSProcessInfo, NSString};
             let token = NSProcessInfo::processInfo().beginActivityWithOptions_reason(NSActivityOptions::UserInitiated, &NSString::from_str("playing a recording"));
@@ -255,6 +262,7 @@ impl AudioPreview {
 
     pub fn pause(&mut self) {
         self.shared.playing.store(false, Ordering::Relaxed);
+        #[cfg(target_os = "macos")]
         if let Some(t) = self.activity.take() {
             // SAFETY: the token came from beginActivity and is ended once.
             unsafe { objc2_foundation::NSProcessInfo::processInfo().endActivity(&t.0) };

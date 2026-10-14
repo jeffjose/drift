@@ -6,19 +6,51 @@
 pub mod editor;
 pub mod maskwatch;
 pub mod home;
+#[cfg_attr(target_os = "linux", path = "hotkey_linux.rs")]
 pub mod hotkey;
 pub mod inspector;
+#[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(target_os = "macos")]
+pub use macos as shell;
+#[cfg(target_os = "linux")]
+#[path = "shell_linux.rs"]
+pub mod shell;
+#[cfg(target_os = "linux")]
+#[path = "clipboard_linux.rs"]
+pub mod clipboard;
+#[cfg(target_os = "linux")]
+#[path = "pill_linux.rs"]
+pub mod pill;
+#[cfg_attr(target_os = "linux", path = "menubar_linux.rs")]
 pub mod menubar;
 pub mod player;
 pub mod preview;
 pub mod snapshot;
 pub mod theme;
 pub mod timeline;
+#[cfg_attr(target_os = "linux", path = "voiceover_linux.rs")]
 pub mod voiceover;
+#[cfg_attr(target_os = "linux", path = "recbar_linux.rs")]
 pub mod recbar;
 pub mod widgets;
 pub mod winpick;
+
+/// Where the recording bar sits on screen.
+#[cfg(target_os = "macos")]
+type BarOrigin = objc2_core_foundation::CGPoint;
+#[cfg(target_os = "linux")]
+type BarOrigin = recbar::Origin;
+
+/// Proof of being on the main thread, which AppKit asks for (and X11 doesn't).
+#[cfg(target_os = "macos")]
+fn main_thread() -> Option<objc2::MainThreadMarker> {
+    objc2::MainThreadMarker::new()
+}
+#[cfg(target_os = "linux")]
+fn main_thread() -> Option<()> {
+    Some(())
+}
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -164,7 +196,7 @@ impl<K: Clone + PartialEq + Send + 'static, V: Send + 'static> Slot<K, V> {
             let (tx, rx) = std::sync::mpsc::channel();
             let key = k.clone();
             std::thread::spawn(move || {
-                let _ = tx.send(objc2::rc::autoreleasepool(|_| start(&key)));
+                let _ = tx.send(crate::util::pool(|| start(&key)));
                 wake();
             });
             self.starting = Some((k, rx));
@@ -200,6 +232,10 @@ struct Live {
     interop: Option<crate::render::interop::TextureCache>,
     /// The registered native texture, reused across sources.
     tex_id: Option<egui::TextureId>,
+    /// Where frames can't be used in place (Linux), the screen preview is
+    /// an ordinary texture the newest frame is copied into.
+    #[cfg(not(target_os = "macos"))]
+    screen_tex: Option<egui::TextureHandle>,
     cam_tex: Option<egui::TextureHandle>,
     /// Displayed levels (peak hold with decay).
     levels: [f32; 2],
@@ -293,7 +329,7 @@ struct App {
     /// Floating recording controls (while recording).
     bar: Option<recbar::RecordBar>,
     /// Where the user last left the bar (screen points, bottom-left).
-    bar_origin: Option<objc2_core_foundation::CGPoint>,
+    bar_origin: Option<BarOrigin>,
     /// Picker overlays, one per display.
     overlays: Vec<Win>,
     area: AreaPick,
@@ -377,20 +413,28 @@ impl App {
     }
 
     fn open_window(&mut self, el: &ActiveEventLoop, title: &str, size: (f64, f64), min: (f64, f64)) -> Win {
-        use winit::platform::macos::WindowAttributesExtMacOS;
         let attrs = Window::default_attributes()
             .with_title(title)
             .with_inner_size(winit::dpi::LogicalSize::new(size.0, size.1))
-            .with_min_inner_size(winit::dpi::LogicalSize::new(min.0, min.1))
-            .with_titlebar_transparent(true)
-            .with_fullsize_content_view(true)
-            .with_title_hidden(true);
+            .with_min_inner_size(winit::dpi::LogicalSize::new(min.0, min.1));
+        // macOS: the toolbar runs under a transparent title bar. Elsewhere
+        // the window manager's own title bar sits above it.
+        #[cfg(target_os = "macos")]
+        let attrs = {
+            use winit::platform::macos::WindowAttributesExtMacOS;
+            attrs.with_titlebar_transparent(true).with_fullsize_content_view(true).with_title_hidden(true)
+        };
+        #[cfg(target_os = "linux")]
+        let attrs = {
+            use winit::platform::x11::WindowAttributesExtX11;
+            attrs.with_name("glide", "Glide")
+        };
         self.make_window(el, attrs, false)
     }
 
     /// Borderless transparent window covering a display (area picker).
     fn open_overlay(&mut self, el: &ActiveEventLoop, display: u32) -> Win {
-        let (id, x, y, w, h) = macos::display_frame(display);
+        let (id, x, y, w, h) = shell::display_frame(display);
         let attrs = Window::default_attributes()
             .with_title("Select Area")
             .with_decorations(false)
@@ -408,7 +452,7 @@ impl App {
     /// on `display`.
     fn open_overlays(&mut self, el: &ActiveEventLoop, display: u32) {
         if self.overlays.is_empty() {
-            for d in macos::display_ids() {
+            for d in shell::display_ids() {
                 let w = self.open_overlay(el, d);
                 self.overlays.push(w);
             }
@@ -419,7 +463,7 @@ impl App {
             }
             w.window.request_redraw();
         }
-        macos::activate();
+        shell::activate();
     }
 
     fn make_window(&mut self, el: &ActiveEventLoop, attrs: winit::window::WindowAttributes, overlay: bool) -> Win {
@@ -481,7 +525,7 @@ impl App {
         );
         if !overlay {
             let (x, y) = theme::TRAFFIC_LIGHTS;
-            macos::inset_traffic_lights(&window, x, y);
+            shell::inset_traffic_lights(&window, x, y);
         }
         window.request_redraw();
         Win { window, surface, config, egui, ctx, renderer, repaint_at: None, overlay, display: 0 }
@@ -498,7 +542,7 @@ impl App {
             w.window.request_redraw();
         }
         if !self.scripted() {
-            macos::activate();
+            shell::activate();
         }
     }
 
@@ -597,12 +641,26 @@ impl App {
             w.window.set_visible(false);
         }
         if self.bar.is_none()
-            && let Some(mtm) = objc2::MainThreadMarker::new()
+            && let Some(mtm) = main_thread()
         {
             let hk = &self.settings.hotkeys;
             let display = if matches!(self.settings.source, SourceKind::Display | SourceKind::Area) { self.settings.display } else { 0 };
             let pause = hk.pause.map(|c| c.label()).unwrap_or_default();
-            self.bar = Some(recbar::RecordBar::new(mtm, display, self.bar_origin, &hk.record_label(), &pause));
+            #[cfg(target_os = "macos")]
+            let bar = recbar::RecordBar::new(mtm, display, self.bar_origin, &hk.record_label(), &pause);
+            // X11 can't leave the bar out of the recording: it's told what
+            // is recorded, to keep off it.
+            #[cfg(target_os = "linux")]
+            let bar = {
+                let s = &self.settings;
+                let source = match s.source {
+                    SourceKind::Area => Some(livecap::Source::Area { display: s.display, rect: s.area }),
+                    SourceKind::Window => s.window.map(|id| livecap::Source::Window { id }),
+                    _ => Some(livecap::Source::Display { id: s.display }),
+                };
+                recbar::RecordBar::new(mtm, display, self.bar_origin, &hk.record_label(), &pause, source.and_then(|s| livecap::source_rect(&s).ok()))
+            };
+            self.bar = Some(bar);
         }
         if countdown.is_none() {
             self.begin_capture();
@@ -640,7 +698,7 @@ impl App {
         std::thread::spawn(move || {
             // Always report back, even if finalising panics, so the UI can't
             // stay on "Saving…" forever.
-            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| objc2::rc::autoreleasepool(|_| r.stop())))
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::util::pool(|| r.stop())))
                 .unwrap_or_else(|_| Err(anyhow::anyhow!("saving the recording crashed")))
                 .map_err(|e| format!("{e:#}"));
             *done.lock().unwrap() = Some(res);
@@ -654,9 +712,9 @@ impl App {
         let Some(rec) = self.recording.take() else { return };
         if let Some(r) = rec.rec {
             if restarting {
-                objc2::rc::autoreleasepool(|_| r.cancel());
+                crate::util::pool(|| r.cancel());
             } else {
-                std::thread::spawn(move || objc2::rc::autoreleasepool(|_| r.cancel()));
+                std::thread::spawn(move || crate::util::pool(|| r.cancel()));
             }
         }
         // Restarting keeps the recording bar up for the new take.
@@ -695,7 +753,7 @@ impl App {
             }
             Cmd::Cancel => self.cancel_recording(false),
             Cmd::ShowWindow => self.show_main(el),
-            Cmd::OpenFolder => macos::open_folder(&self.settings.dir()),
+            Cmd::OpenFolder => shell::open_folder(&self.settings.dir()),
             Cmd::Back => self.close_project(),
             Cmd::Open(p) => self.open_project(el, p),
             Cmd::RecordSource(kind) => {
@@ -715,12 +773,12 @@ impl App {
                     return;
                 }
                 // Pick on the display under the pointer.
-                let display = macos::display_under_pointer();
-                let (id, _, _, dw, dh) = macos::display_frame(display);
+                let display = shell::display_under_pointer();
+                let (id, _, _, dw, dh) = shell::display_frame(display);
                 let s = &self.settings;
                 // Start from the saved area when it was on this display,
                 // trimmed to it.
-                let same_display = macos::display_frame(s.display).0 == id;
+                let same_display = shell::display_frame(s.display).0 == id;
                 let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(dw as f32, dh as f32));
                 let rect = (same_display && s.source == SourceKind::Area && s.area[2] > 8.0 && s.area[3] > 8.0)
                     .then(|| egui::Rect::from_min_size(egui::pos2(s.area[0] as f32, s.area[1] as f32), vec2(s.area[2] as f32, s.area[3] as f32)).intersect(screen))
@@ -733,8 +791,8 @@ impl App {
                     return;
                 }
                 // Pick on the display under the pointer.
-                let display = macos::display_under_pointer();
-                let (id, ..) = macos::display_frame(display);
+                let display = shell::display_under_pointer();
+                let (id, ..) = shell::display_frame(display);
                 let windows = Some(WindowMode { list: winpick::list_all(), ..Default::default() });
                 self.area = AreaPick { rect: None, drag: None, record_after, display: id, closed: false, windows };
                 self.open_overlays(el, id);
@@ -1006,7 +1064,7 @@ impl App {
                 };
                 let size = w.window.inner_size();
                 log(&format!("area picker open {}x{} px, {} displays covered", size.width, size.height, self.overlays.len()));
-                if let (Some(dir), Some(num)) = (std::env::var_os("GLIDE_SELFTEST_SHOTS"), macos::window_number(&w.window)) {
+                if let (Some(dir), Some(num)) = (std::env::var_os("GLIDE_SELFTEST_SHOTS"), shell::window_number(&w.window)) {
                     let out = PathBuf::from(dir).join("area-picker.png");
                     let ok = std::process::Command::new("screencapture").args(["-x", "-o", "-l", &num.to_string()]).arg(&out).status().is_ok_and(|s| s.success());
                     log(&format!("area picker screenshot {} ok={ok}", out.display()));
@@ -1043,7 +1101,7 @@ impl App {
                 log(&format!("window picker open on {} displays with {} windows, selected {:?}", self.overlays.len(), wm.list.len(), wm.selected));
                 if let Some(dir) = std::env::var_os("GLIDE_SELFTEST_SHOTS") {
                     for o in &self.overlays {
-                        let Some(num) = macos::window_number(&o.window) else { continue };
+                        let Some(num) = shell::window_number(&o.window) else { continue };
                         let out = PathBuf::from(&dir).join(format!("window-picker-{}.png", o.display));
                         let ok = std::process::Command::new("screencapture").args(["-x", "-o", "-l", &num.to_string()]).arg(&out).status().is_ok_and(|s| s.success());
                         log(&format!("window picker screenshot {} ok={ok}", out.display()));
@@ -1345,8 +1403,18 @@ impl App {
                 }
                 cache.flush();
             }
+            #[cfg(not(target_os = "macos"))]
+            if let Some(f) = p.take_frame() {
+                let img = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba);
+                // Nearest, as above: it's drawn at its own size.
+                match &mut live.screen_tex {
+                    Some(t) => t.set(img, egui::TextureOptions::NEAREST),
+                    None => live.screen_tex = Some(ctx.load_texture("screen-preview", img, egui::TextureOptions::NEAREST)),
+                }
+                live.tex = live.screen_tex.as_ref().map(|t| (t.id(), [f.width, f.height]));
+            }
         }
-        let upload = |slot: &mut Option<egui::TextureHandle>, p: &livecap::LivePreview, name: &str| {
+        let upload =|slot: &mut Option<egui::TextureHandle>, p: &livecap::LivePreview, name: &str| {
             if let Some(f) = p.take_frame() {
                 let img = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba);
                 match slot {
@@ -1773,8 +1841,8 @@ impl App {
         let Some(gpu) = self.gpu.clone() else { return };
         let Some(mut win) = self.take_window(which) else { return };
         if which == Which::Main {
-            let fs = macos::fullscreen_display(&win.window);
-            theme::FULLSCREEN.store(fs.is_some() || macos::is_fullscreen(&win.window), std::sync::atomic::Ordering::Relaxed);
+            let fs = shell::fullscreen_display(&win.window);
+            theme::FULLSCREEN.store(fs.is_some() || shell::is_fullscreen(&win.window), std::sync::atomic::Ordering::Relaxed);
             theme::FULLSCREEN_DISPLAY.store(fs.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
         }
         let input = win.egui.take_egui_input(&win.window);
@@ -1811,7 +1879,7 @@ impl App {
         if let Some(frame) = frame {
             if !win.overlay {
                 let (x, y) = theme::TRAFFIC_LIGHTS;
-                macos::inset_traffic_lights(&win.window, x, y);
+                shell::inset_traffic_lights(&win.window, x, y);
             }
             let view = frame.texture.create_view(&Default::default());
             let sd = egui_wgpu::ScreenDescriptor { size_in_pixels: [win.config.width, win.config.height], pixels_per_point: ppp };
@@ -1865,8 +1933,10 @@ impl ApplicationHandler for App {
         if self.menubar.is_some() {
             return;
         }
-        let mtm = objc2::MainThreadMarker::new().expect("main thread");
+        let mtm = main_thread().expect("main thread");
         self.menubar = Some(menubar::MenuBar::new(mtm));
+        #[cfg(target_os = "linux")]
+        shell::note_monitors(el);
         self.bind_hotkeys();
         self.show_main(el);
         if let Some(p) = self.open_at_launch.take() {
@@ -1949,7 +2019,7 @@ impl ApplicationHandler for App {
             ed.save();
         }
         if let Some(Recording { rec: Some(r), .. }) = self.recording.take() {
-            if let Err(e) = objc2::rc::autoreleasepool(|_| r.stop()) {
+            if let Err(e) = crate::util::pool(|| r.stop()) {
                 eprintln!("glide: saving the recording on quit failed: {e:#}");
             }
         }
@@ -2000,7 +2070,7 @@ pub fn run(open: Option<PathBuf>) -> Result<()> {
     std::thread::spawn(player::sweep_stale);
     let el = EventLoop::new()?;
     let _ = PROXY.set(Mutex::new(el.create_proxy()));
-    macos::install_open_handler();
+    shell::install_open_handler();
     let mut app = App::new(open);
     el.run_app(&mut app)?;
     Ok(())
@@ -2010,7 +2080,7 @@ pub fn run(open: Option<PathBuf>) -> Result<()> {
 /// shows nothing but Glide (left out of the capture): say so over the preview.
 fn covered_note(s: &home::Settings) -> Option<String> {
     let fs = theme::FULLSCREEN_DISPLAY.load(std::sync::atomic::Ordering::Relaxed);
-    let target = if s.display == 0 { macos::main_display() } else { s.display };
+    let target = if s.display == 0 { shell::main_display() } else { s.display };
     (fs != 0 && matches!(s.source, SourceKind::Display | SourceKind::Area) && fs == target)
         .then(|| "Glide is full screen on this display, so there's nothing else to show.\nExit full screen to see what you'll record.".into())
 }

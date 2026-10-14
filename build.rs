@@ -1,4 +1,7 @@
 fn main() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
+        return;
+    }
     // Embed Info.plist into the Mach-O so TCC finds usage strings and a stable
     // bundle identifier even when the binary runs outside the .app bundle.
     let plist = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("support/Info.plist");

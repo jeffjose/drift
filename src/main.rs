@@ -241,6 +241,7 @@ enum Cmd {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     // AppKit must be initialised for cursor and device queries.
+    #[cfg(target_os = "macos")]
     if let Some(mtm) = objc2::MainThreadMarker::new() {
         let _ = objc2_app_kit::NSApplication::sharedApplication(mtm);
     }
@@ -275,7 +276,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some(Cmd::Wallpaper { output }) => {
-            glide::app::macos::save_desktop_wallpaper(&output)?;
+            glide::app::shell::save_desktop_wallpaper(&output)?;
             println!("{}", output.display());
             Ok(())
         }
