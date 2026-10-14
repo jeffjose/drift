@@ -129,6 +129,9 @@ struct Win {
     overlay: bool,
     /// The display an overlay covers (0 for other windows).
     display: u32,
+    /// A picture of the display taken as the overlay opened, drawn under
+    /// it where windows can't be see-through (X11 with no compositor).
+    backdrop: Option<egui::TextureHandle>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -443,8 +446,15 @@ impl App {
             .with_position(winit::dpi::LogicalPosition::new(x, y))
             .with_inner_size(winit::dpi::LogicalSize::new(w, h))
             .with_window_level(WindowLevel::AlwaysOnTop);
+        // Before the overlay covers it.
+        #[cfg(target_os = "linux")]
+        let picture = shell::display_picture(id);
         let mut win = self.make_window(el, attrs, true);
         win.display = id;
+        #[cfg(target_os = "linux")]
+        if let Some(img) = picture {
+            win.backdrop = Some(win.ctx.load_texture("backdrop", img, egui::TextureOptions::NEAREST));
+        }
         win
     }
 
@@ -528,7 +538,7 @@ impl App {
             shell::inset_traffic_lights(&window, x, y);
         }
         window.request_redraw();
-        Win { window, surface, config, egui, ctx, renderer, repaint_at: None, overlay, display: 0 }
+        Win { window, surface, config, egui, ctx, renderer, repaint_at: None, overlay, display: 0, backdrop: None }
     }
 
     fn show_main(&mut self, el: &ActiveEventLoop) {
@@ -1848,12 +1858,17 @@ impl App {
         let input = win.egui.take_egui_input(&win.window);
         let ctx = win.ctx.clone();
         let renderer = &mut win.renderer;
+        let backdrop = win.backdrop.clone();
         // The overlay may close itself while drawing; remember that.
         let mut keep = true;
         let out = ctx.run_ui(input, |ui| match which {
             Which::Main => self.draw_main(ui, renderer),
             Which::Overlay(display) => {
                 egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
+                    if let Some(t) = &backdrop {
+                        let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                        ui.painter().image(t.id(), ui.max_rect(), uv, Color32::WHITE);
+                    }
                     self.draw_overlay(ui, display);
                 });
                 keep = !self.area.closed;

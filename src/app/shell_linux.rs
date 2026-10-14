@@ -156,6 +156,24 @@ pub fn display_frame(id: u32) -> (u32, f64, f64, f64, f64) {
     }
 }
 
+/// A picture of a display as it is now, when windows can't be
+/// see-through (no compositing manager): the picker overlays draw it
+/// under themselves, so the screen appears to show through.
+pub fn display_picture(id: u32) -> Option<egui::ColorImage> {
+    if X::open().ok()?.composited() {
+        return None;
+    }
+    let d = screen::display(id).ok()?;
+    let (w, h) = (d.pixels.0 as u32, d.pixels.1 as u32);
+    let mut grabber = crate::capture::x11::Grabber::new(w, h).ok()?;
+    let (rows, got) = grabber.grab(d.origin.0, d.origin.1, w, h).ok()?;
+    if (got.2, got.3) != (w, h) {
+        return None;
+    }
+    let rgba: Vec<u8> = rows.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], 255]).collect();
+    Some(egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba))
+}
+
 /// The X window id (macOS: the window number), for taking its picture.
 pub fn window_number(window: &Window) -> Option<isize> {
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
