@@ -6,6 +6,8 @@ from upstream, what is and isn't verified, the open work, and the traps.
 Update it in the same commit as any change it describes.
 
 - Build and test: `cargo build --release`, `cargo test --release`.
+  System packages: `scripts/setup.sh` (`--check` to only report). A new
+  build dependency that needs a system library goes in its package list.
 - Binary: `target/release/glide` (the app keeps the Glide name).
 - Engine, renderer and editor UI stay 1:1 with upstream; platform work goes
   in the Linux files listed in `docs/PORT.md`.

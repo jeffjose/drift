@@ -20,15 +20,20 @@ The binary and the `.glide` project format keep Glide's name.
 
 ## Install
 
-Requires X11, a Vulkan-capable GPU, CMake and the ffmpeg libraries. On
-Debian or Ubuntu:
+Requires X11, a Vulkan-capable GPU and [Rust](https://rustup.rs). On
+Debian or Ubuntu, `scripts/setup.sh` installs the system packages the
+build needs (CMake, libclang, pkg-config, the ffmpeg and ALSA headers),
+skipping any already there:
 
 ```sh
-sudo apt install cmake libavcodec-dev libavformat-dev libavutil-dev \
-  libswscale-dev libswresample-dev libasound2-dev
+scripts/setup.sh
 cargo build --release
 cp target/release/glide ~/.local/bin/
 ```
+
+`scripts/setup.sh --check` only reports what's missing. On other
+distributions, install the equivalents of the packages listed at the top
+of the script.
 
 ## Usage
 
