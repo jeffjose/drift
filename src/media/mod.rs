@@ -4,6 +4,7 @@
 mod decode;
 pub use decode::*;
 pub mod encode;
+pub(crate) mod sws;
 pub mod writer;
 
 use std::path::Path;

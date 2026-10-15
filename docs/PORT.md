@@ -229,10 +229,27 @@ Roughly in order of value.
   user's screen; test in Xvfb.
 - **Xvfb has no window manager**: no focus, so keyboard input to the app
   and some drags don't arrive. Global hotkeys do (`xdotool key`).
-- **ffmpeg 4.4 API** (Ubuntu 22.04): no `AVChannelLayout`, no swscale
-  threading. `ffmpeg-next` hides most version differences; raw `ffi` calls
-  in `decode.rs`/`encode.rs`/`preview.rs` are limited to stable swscale and
-  frame functions. Recheck on newer ffmpeg.
+- **Two ffmpeg versions must build**: 4.4 (Ubuntu 22.04) and 8.x (the
+  user's newer machine runs 8.1.2). Both were checked: 4.4 natively, 8.1.2
+  by building it in a scratch prefix (`./configure --prefix=... --enable-shared
+  --disable-programs --disable-x86asm --enable-nvenc --enable-gpl
+  --enable-libx264`, NVENC headers from nv-codec-headers tag `n13.0.19.0`;
+  git master is too new for 8.x) and pointing `PKG_CONFIG_PATH`,
+  `LD_LIBRARY_PATH` and `RUSTFLAGS="-L native=<prefix>/lib"` at it (the
+  last because another crate puts the system lib dir first on the link
+  line). Rules that keep both working:
+  - swscale flag and colour-space values come from `media/sws.rs`, never
+    `ffi::SWS_*`: ffmpeg 8 made the flags an enum the bindings name
+    differently.
+  - Prefer `ffmpeg-next`'s safe API wherever its types change across
+    versions (channel layouts, threading config); its `#[cfg]`s handle it.
+    `set_channels` and `Config { safe, .. }` don't exist on 7+.
+  - Raw `ffi` calls stay limited to swscale and frame functions whose
+    signatures haven't changed.
+- **The GPU may be shared.** ComfyUI on the dev machine can hold almost
+  all of the 3090's memory; then NVENC fails to open ("out of memory",
+  "No capable devices") and tests fail with "creating GPU device". Check
+  `nvidia-smi` before blaming the code.
 - **The setup preview is a mirror** when Glide's window is on the display
   being previewed. Expected.
 - Synthetic recordings (`glide synth`, `record --pattern`) need no display.

@@ -8,6 +8,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use ffmpeg_next as ff;
 use ff::ffi;
 
+use super::sws;
 use crate::capture::mixer;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,8 +95,10 @@ fn candidates(p: &VideoParams) -> &'static [&'static str] {
         (_, true, true) => &["libx264"],
         (VideoCodec::H264, false, false) => &["h264_nvenc", "libx264"],
         (VideoCodec::H264, true, false) => &["libx264"],
-        (VideoCodec::Hevc, false, false) => &["hevc_nvenc", "libx265"],
-        (VideoCodec::Hevc, true, false) => &["libx265"],
+        // H.264 when there's no HEVC encoder at all (an ffmpeg built
+        // without x265, and no GPU encoder).
+        (VideoCodec::Hevc, false, false) => &["hevc_nvenc", "libx265", "h264_nvenc", "libx264"],
+        (VideoCodec::Hevc, true, false) => &["libx265", "libx264"],
     }
 }
 
@@ -196,8 +199,8 @@ fn open_audio(global_header: bool) -> Result<(ff::encoder::Audio, ff::Codec)> {
     }
     let mut enc = ctx.encoder().audio()?;
     enc.set_rate(mixer::RATE as i32);
+    // Sets the channel count too: the layout carries it.
     enc.set_channel_layout(ff::ChannelLayout::STEREO);
-    enc.set_channels(2);
     enc.set_format(ff::format::Sample::F32(ff::format::sample::Type::Planar));
     enc.set_bit_rate(AUDIO_BPS);
     enc.set_time_base(ff::Rational(1, mixer::RATE as i32));
@@ -249,16 +252,16 @@ impl Muxer {
         picture.set_color_range(ff::color::Range::MPEG);
         picture.set_color_primaries(ff::color::Primaries::BT709);
         picture.set_color_transfer_characteristic(ff::color::TransferCharacteristic::IEC61966_2_1);
-        let flags = ffi::SWS_BILINEAR | ffi::SWS_ACCURATE_RND | ffi::SWS_FULL_CHR_H_INP;
+        let flags = sws::BILINEAR | sws::ACCURATE_RND | sws::FULL_CHR_H_INP;
         // SAFETY: sizes are the encoder's; the context is checked.
         let sws = unsafe {
             let (w, h) = (p.width as i32, p.height as i32);
-            let ctx = ffi::sws_getContext(w, h, ffi::AVPixelFormat::AV_PIX_FMT_BGRA, w, h, format.into(), flags as i32, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null());
+            let ctx = ffi::sws_getContext(w, h, ffi::AVPixelFormat::AV_PIX_FMT_BGRA, w, h, format.into(), flags, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null());
             if ctx.is_null() {
                 bail!("no conversion from BGRA to {format:?}");
             }
             // Full-range RGB in, limited-range BT.709 out.
-            let bt709 = ffi::sws_getCoefficients(ffi::SWS_CS_ITU709 as i32);
+            let bt709 = ffi::sws_getCoefficients(sws::CS_ITU709);
             ffi::sws_setColorspaceDetails(ctx, bt709, 1, bt709, 0, 0, 1 << 16, 1 << 16);
             ctx
         };

@@ -75,7 +75,7 @@ impl Scaler {
         // SAFETY: `src` holds sh rows of sw*4 bytes and `out` dh rows of
         // dw*4; the context is checked before use.
         unsafe {
-            self.0 = ffi::sws_getCachedContext(self.0, sw as i32, sh as i32, ffi::AVPixelFormat::AV_PIX_FMT_BGRA, dw as i32, dh as i32, ffi::AVPixelFormat::AV_PIX_FMT_RGBA, ffi::SWS_AREA as i32, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null());
+            self.0 = ffi::sws_getCachedContext(self.0, sw as i32, sh as i32, ffi::AVPixelFormat::AV_PIX_FMT_BGRA, dw as i32, dh as i32, ffi::AVPixelFormat::AV_PIX_FMT_RGBA, crate::media::sws::AREA, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null());
             if self.0.is_null() {
                 return None;
             }

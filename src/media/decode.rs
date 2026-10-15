@@ -7,6 +7,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use ffmpeg_next as ff;
 use ff::ffi;
 
+use super::sws;
 use crate::capture::mixer;
 use crate::render::VideoFrame;
 use crate::util::SendBox;
@@ -110,21 +111,21 @@ impl Converter {
         // Untagged video is BT.709 limited range, as screen recordings are;
         // only what says it is BT.601 is read as that.
         let matrix = match frame.color_space() {
-            ff::color::Space::BT470BG | ff::color::Space::SMPTE170M => ffi::SWS_CS_ITU601,
-            ff::color::Space::BT2020NCL | ff::color::Space::BT2020CL => ffi::SWS_CS_BT2020,
-            _ => ffi::SWS_CS_ITU709,
+            ff::color::Space::BT470BG | ff::color::Space::SMPTE170M => sws::CS_ITU601,
+            ff::color::Space::BT2020NCL | ff::color::Space::BT2020CL => sws::CS_BT2020,
+            _ => sws::CS_ITU709,
         };
         let full = matches!(frame.color_range(), ff::color::Range::JPEG);
-        let flags = ffi::SWS_BILINEAR | ffi::SWS_ACCURATE_RND | ffi::SWS_FULL_CHR_H_INT;
+        let flags = sws::BILINEAR | sws::ACCURATE_RND | sws::FULL_CHR_H_INT;
         // SAFETY: sizes and formats come from a decoded frame; the context
         // is checked before use.
         let ctx = unsafe {
             let src: ffi::AVPixelFormat = frame.format().into();
-            let ctx = ffi::sws_getContext(w as i32, h as i32, src, w as i32, h as i32, ffi::AVPixelFormat::AV_PIX_FMT_BGRA, flags as i32, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null());
+            let ctx = ffi::sws_getContext(w as i32, h as i32, src, w as i32, h as i32, ffi::AVPixelFormat::AV_PIX_FMT_BGRA, flags, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null());
             if ctx.is_null() {
                 bail!("no conversion from {:?} to BGRA", frame.format());
             }
-            ffi::sws_setColorspaceDetails(ctx, ffi::sws_getCoefficients(matrix as i32), full as i32, ffi::sws_getCoefficients(ffi::SWS_CS_DEFAULT as i32), 1, 0, 1 << 16, 1 << 16);
+            ffi::sws_setColorspaceDetails(ctx, ffi::sws_getCoefficients(matrix), full as i32, ffi::sws_getCoefficients(sws::CS_DEFAULT), 1, 0, 1 << 16, 1 << 16);
             ctx
         };
         Ok(Converter { ctx, key: (format, w, h, space, range) })
@@ -197,7 +198,7 @@ impl VideoReader {
             (s.index(), tick_ms, fps, s.start_time(), s.duration(), s.parameters())
         };
         let mut ctx = ff::codec::context::Context::from_parameters(params)?;
-        ctx.set_threading(ff::threading::Config { kind: ff::threading::Type::Frame, count: 0, safe: false });
+        ctx.set_threading(ff::threading::Config::kind(ff::threading::Type::Frame));
         let decoder = ctx.decoder().video().context("opening the video decoder")?;
         let origin_ms = if start == ffi::AV_NOPTS_VALUE { 0.0 } else { start as f64 * tick_ms };
         let duration_ms = if duration != ffi::AV_NOPTS_VALUE && duration > 0 {
