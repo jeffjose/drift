@@ -39,6 +39,9 @@ whisper-rs = "0.16"
 ffmpeg-next = { version = "9", default-features = false, features = ["codec", "format", "software-scaling", "software-resampling"] }
 x11rb = { version = "0.14", features = ["shm", "randr", "shape", "xfixes", "xinput"] }
 
+[build-dependencies]
+vergen-gitcl = "10.0.3"
+
 [profile.release]
 debug = 1
 lto = "thin"

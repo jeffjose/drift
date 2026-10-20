@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
@@ -12,8 +13,22 @@ use glide::project::model::{Codec, ExportFormat, ExportSettings, Quality};
 use glide::project::{self, Package};
 use glide::render::{Gpu, Renderer, VideoFrame};
 
+/// The version and the commit it was built from: `0.1.0-abc1234`, with
+/// `-dirty` if the tree had changes not committed.
+fn version() -> &'static str {
+    static VERSION: OnceLock<String> = OnceLock::new();
+    VERSION.get_or_init(|| {
+        // Unset where git could not be asked, or vergen's stand-in.
+        let Some(sha) = option_env!("VERGEN_GIT_SHA").filter(|sha| !sha.is_empty() && !sha.contains("VERGEN")) else {
+            return env!("CARGO_PKG_VERSION").to_string();
+        };
+        let dirty = if option_env!("VERGEN_GIT_DIRTY") == Some("true") { "-dirty" } else { "" };
+        format!("{}-{sha}{dirty}", env!("CARGO_PKG_VERSION"))
+    })
+}
+
 #[derive(Parser)]
-#[command(name = "glide", version, about = "Fast native screen recorder and editor")]
+#[command(name = "glide", version = version(), about = "Fast native screen recorder and editor")]
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
